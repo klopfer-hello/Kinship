@@ -30,5 +30,5 @@ read_globals = {
 	"UnitExists", "UnitFullName", "UnitGUID", "UnitIsConnected", "UnitIsInMyGuild", "UnitLevel",
 	"UnitName", "UnitXP", "UnitXPMax", "wipe",
 	-- frames, objects and strings
-	"ACCEPT", "ChatFontNormal", "DECLINE", "DEFAULT_CHAT_FRAME", "NO", "UIParent", "YES",
+	"ACCEPT", "ChatFontNormal", "DECLINE", "ERR_CHAT_PLAYER_NOT_FOUND_S", "DEFAULT_CHAT_FRAME", "NO", "UIParent", "YES",
 }

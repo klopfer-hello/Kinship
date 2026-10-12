@@ -98,12 +98,11 @@ local function isSuccess(res)
 	return R and res == R.Success
 end
 
+-- Only the chat messaging lockdown pauses sending. AreOutgoingAddonChatMessagesRestricted()
+-- reports true even idle in the open world on Forever while sends still succeed
+-- (measured 2026-10-12), so it is logged by the tests but not acted on.
 local function checkLockdown()
 	local lock = C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()
-	if not lock and C_ChatInfo.AreOutgoingAddonChatMessagesRestricted then
-		local ok, restricted = pcall(C_ChatInfo.AreOutgoingAddonChatMessagesRestricted)
-		lock = ok and restricted
-	end
 	lock = lock and true or false
 	if lock ~= locked then
 		locked = lock

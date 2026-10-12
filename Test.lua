@@ -168,27 +168,75 @@ local function guildFullName(short)
 	end
 end
 
+local WHISPER_WINDOW = 1.2   -- seconds per spelling in the whisper test
+
+-- "No player named '%s' is currently playing." -> Lua pattern capturing the name.
+local function notFoundPattern()
+	local fmt = ERR_CHAT_PLAYER_NOT_FOUND_S or "No player named '%s' is currently playing."
+	return "^" .. fmt:gsub("[%(%)%.%+%-%*%?%[%]%^%$]", "%%%0"):gsub("%%%%s", "(.+)") .. "$"
+end
+
+-- Forever characters have a first name and a surname; UnitFullName returns the
+-- surname where other clients return the realm (measured 2026-10-12). Tries every
+-- plausible spelling; the server's "no player named X" reply tells which fail.
 function Test.Whisper(target)
-	target = target or UnitName("player")
-	local run = ("%x"):format(math.random(0, 0xffff))
-	local short = ns.ShortName(target)
-	local variants = {
-		typed = target,
-		short = short,
-		withRealm = short .. "-" .. GetNormalizedRealmName(),
-		roster = guildFullName(short),
-	}
-	local sent = 0
-	for label, name in pairs(variants) do
-		local _, resName = rawSend(("S2|%s|%s|%s"):format(run, label, name), "WHISPER", name)
-		log("S2_TX", { run = run, variant = label, target = name, res = resName })
-		sent = sent + 1
+	local short, surname
+	if not target or ns.IsMe(target) then
+		short, surname = UnitFullName("player")
+	else
+		short = ns.ShortName(target)
 	end
-	if IsInGuild() and not ns.IsMe(target) then
+	local realm = GetNormalizedRealmName()
+	local candidates = {
+		{ "typed", target },
+		{ "short", short },
+		{ "withRealm", short .. "-" .. realm },
+		{ "roster", guildFullName(short) },
+	}
+	if surname and surname ~= "" and surname ~= realm then
+		candidates[#candidates + 1] = { "nameSurname", short .. " " .. surname }
+		candidates[#candidates + 1] = { "nameDashSurname", short .. "-" .. surname }
+		candidates[#candidates + 1] = { "nameSurnameRealm", short .. " " .. surname .. "-" .. realm }
+	end
+
+	local run = ("%x"):format(math.random(0, 0xffff))
+	local seen, byName, list = {}, {}, {}
+	for _, c in ipairs(candidates) do
+		if c[2] and not seen[c[2]] then
+			seen[c[2]] = true
+			byName[c[2]] = c[1]
+			list[#list + 1] = c
+		end
+	end
+	-- One spelling per window: the server's "no player named …" reply quotes a
+	-- shortened name, so a rejection is credited to the spelling of its window.
+	local pattern = notFoundPattern()
+	local current
+	local listener = CreateFrame("Frame")
+	listener:RegisterEvent("CHAT_MSG_SYSTEM")
+	listener:SetScript("OnEvent", function(_, _, msg)
+		if current and type(msg) == "string" and msg:match(pattern) then
+			log("S2_REJECT", { run = run, target = current[2], variant = current[1], msg = msg })
+		end
+	end)
+	for i, c in ipairs(list) do
+		C_Timer.After((i - 1) * WHISPER_WINDOW, function()
+			current = c
+			local _, resName = rawSend(("S2|%s|%s|%s"):format(run, c[1], c[2]), "WHISPER", c[2])
+			log("S2_TX", { run = run, variant = c[1], target = c[2], res = resName })
+		end)
+	end
+	C_Timer.After(#list * WHISPER_WINDOW + 0.5, function()
+		current = nil
+		listener:UnregisterAllEvents()
+	end)
+	local sent = #list
+
+	if IsInGuild() and target and not ns.IsMe(target) then
 		rawSend(("S2G|%s|%s"):format(run, short), "GUILD")
 	end
-	say("whisper test %s sent to %s (%d spellings)", run, target, sent)
-	return run, sent
+	say("whisper test %s: %d spellings to %s, results in %d s", run, sent, target or short, math.ceil(sent * WHISPER_WINDOW) + 1)
+	return run, sent, byName, sent * WHISPER_WINDOW + 1
 end
 
 -- Where solo-friendly traffic goes: GUILD when in a guild, otherwise a whisper to
@@ -331,12 +379,31 @@ local function buildSteps(ctx)
 		{ name = "Encoding", run = function(done) done(Test.Codec()) end },
 		{ name = "Identity", run = function(done) done(Test.Ids()) end },
 		{ name = "Calendar", timeout = 10, run = function(done) Test.Calendar(done) end },
-		{ name = "Whisper to yourself", timeout = 10, run = function(done)
+		{ name = "Whisper name spellings", timeout = 20, run = function(done)
 			local since = ns.NowMs()
-			local run, sent = Test.Whisper(UnitName("player"))
-			C_Timer.After(6, function()
-				local got = count("S2_PONG", since, function(d) return d and d.run == run end)
-				done(got > 0, ("%d of %d spellings answered"):format(got, sent))
+			local run, sent, byName, wait = Test.Whisper(nil)
+			C_Timer.After(wait + 1, function()
+				local rejected, replied = {}, {}
+				for _, r in ipairs(ns.logSession.records) do
+					local d = r[6]
+					if r[2] >= since and type(d) == "table" and d.run == run then
+						if r[5] == "S2_REJECT" then rejected[d.target] = true end
+						if r[5] == "S2_PONG" then replied[d.variant] = true end
+					end
+				end
+				local valid = {}
+				for name, label in pairs(byName) do
+					if not rejected[name] then
+						valid[#valid + 1] = "'" .. name .. "'"
+						ctx.selfName = ctx.selfName or name
+					end
+					if replied[label] then ctx.selfWhisperOk = true end
+				end
+				table.sort(valid)
+				log("ALL_WHISPER", { run = run, valid = table.concat(valid, ","), selfDelivered = ctx.selfWhisperOk })
+				local text = ("%d of %d spellings known to the server%s; self-delivery %s"):format(#valid, sent,
+					#valid > 0 and (" (" .. table.concat(valid, ", ") .. ")") or "", ctx.selfWhisperOk and "works" or "not possible")
+				done(#valid > 0, text)
 			end)
 		end },
 		{ name = "Whisper delivery to others", needs = function()
@@ -366,10 +433,14 @@ local function buildSteps(ctx)
 				end)
 			end)
 		end },
-		{ name = "Report round trip", timeout = 180, run = function(done)
+		{ name = "Report round trip", timeout = 180, needs = function()
+			if not ctx.selfWhisperOk and not IsInGuild() then
+				return "self-whispers are not delivered; needs a guild or a second player"
+			end
+		end, run = function(done)
 			local since = ns.NowMs()
 			ns.Report.activeHandle = nil
-			ns.Report.Send(UnitName("player"), 1)
+			ns.Report.Send(ctx.selfName or UnitName("player"), 1)
 			local lastQuarter = 0
 			local ticker
 			ticker = C_Timer.NewTicker(1, function()

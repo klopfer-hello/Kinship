@@ -272,10 +272,26 @@ class _LuaParser:
 
 
 def _lua_unescape(s):
-    def rep(m):
-        e = m.group(1)
-        return {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "\n": "\n"}.get(e) or chr(int(e))
-    return re.sub(r"\\(\d{1,3}|.|\n)", rep, s)
+    r"""Lua string escapes -> text. WoW writes non-ASCII bytes as decimal escapes
+    (e.g. \195\151 for a multiplication sign), so rebuild the raw bytes before
+    decoding UTF-8."""
+    out = bytearray()
+    simple = {"n": b"\n", "t": b"\t", "r": b"\r", "\\": b"\\", '"': b'"', "'": b"'", "\n": b"\n"}
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch != "\\":
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        m = re.match(r"\d{1,3}", s[i + 1:])
+        if m:
+            out.append(int(m.group()) & 0xFF)
+            i += 1 + len(m.group())
+        else:
+            out += simple.get(s[i + 1], s[i + 1].encode("utf-8"))
+            i += 2
+    return out.decode("utf-8", errors="replace")
 
 
 def parse_svars(text):
@@ -374,6 +390,7 @@ def cmd_selftest(_args):
     sv = parse_svars('KinshipLog = {\n["inbox"] = {\n{\n["from"] = "A-B",\n["data"] = "' + s + '",\n},\n},\n["sessions"] = {},\n}\nKinshipDB = { ["x"] = 1.5, true, "a\\"b" }\n')
     assert sv["KinshipLog"]["inbox"][0]["from"] == "A-B"
     assert decode_report(sv["KinshipLog"]["inbox"][0]["data"]) == bundle
+    assert _lua_unescape(r"a\195\151b\n") == "a×b\n", "utf-8 escapes"
     assert sv["KinshipDB"]["x"] == 1.5 and sv["KinshipDB"]["1"] is True and sv["KinshipDB"]["2"] == 'a"b'
     rows = timeline([("t", bundle)])
     assert rows[0][0] == 1760000001.0 and rows[0][4] == "S1_TX"
@@ -384,6 +401,9 @@ COMMANDS = {"decode": cmd_decode, "svars": cmd_svars, "merge": cmd_merge, "tests
             "selftest": cmd_selftest}
 
 if __name__ == "__main__":
+    # Windows consoles default to a legacy code page; the logs are UTF-8.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(__doc__)
         sys.exit(2)
