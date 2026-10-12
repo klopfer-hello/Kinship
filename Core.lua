@@ -76,14 +76,57 @@ function ns.NowMs()
 	return math.floor(GetTimePreciseSec() * 1000)
 end
 
--- Short name of a sender/target ("First Surname-Realm" -> "First Surname").
+---------------------------------------------------------------------------
+-- Names. Forever characters have a first name and a surname (measured
+-- 2026-10-12): UnitFullName returns the surname where other clients return the
+-- realm, addon messages arrive from "First Surname", and whispers accept
+-- "First-Surname" or "First Surname". A trailing "-<own realm>" may appear too.
+---------------------------------------------------------------------------
+
+-- Returns first name and surname (or nil) of any spelling.
+function ns.NameParts(name)
+	if not name or name == "" then return nil end
+	local realm = GetNormalizedRealmName()
+	if realm and #name > #realm + 1 and name:sub(-#realm - 1):lower() == ("-" .. realm):lower() then
+		name = name:sub(1, -#realm - 2)
+	end
+	local first, rest = name:match("^([^%s%-]+)[%s%-]?(.*)$")
+	local surname = rest and rest:match("^[^%s%-]+")
+	return first or name, surname
+end
+
+-- Same character? Without a surname on one side, the first names decide.
+function ns.SameName(a, b)
+	local fa, sa = ns.NameParts(a)
+	local fb, sb = ns.NameParts(b)
+	if not fa or not fb or fa:lower() ~= fb:lower() then return false end
+	if sa and sb then return sa:lower() == sb:lower() end
+	return true
+end
+
+-- "First Surname" for display (first name alone when there is no surname).
 function ns.ShortName(name)
-	if not name then return nil end
-	return Ambiguate(name, "none"):match("^[^-]+") or name
+	local first, surname = ns.NameParts(name)
+	return surname and (first .. " " .. surname) or first
+end
+
+-- Spelling for whisper targets: "First-Surname".
+function ns.WhisperName(name)
+	local first, surname = ns.NameParts(name)
+	return surname and (first .. "-" .. surname) or first
+end
+
+-- Own name as "First Surname".
+function ns.MyName()
+	local first, second = UnitFullName("player")
+	if second and second ~= "" and second ~= GetNormalizedRealmName() then
+		return first .. " " .. second
+	end
+	return first or UnitName("player")
 end
 
 function ns.IsMe(name)
-	return name ~= nil and ns.ShortName(name) == UnitName("player")
+	return name ~= nil and ns.SameName(name, ns.MyName())
 end
 
 -- Own messages are ignored, except in loopback test mode (/kin test loopback on),

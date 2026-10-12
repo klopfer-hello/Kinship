@@ -55,6 +55,7 @@ end
 function Comm.Send(msgType, payload, channel, target, prio, chanIndex)
 	local envelope = { t = msgType, p = payload }
 	if target and channel ~= "WHISPER" then envelope.to = target end
+	if channel == "WHISPER" then target = ns.WhisperName(target) end
 	local text, err = ns.Encode(envelope)
 	if not text then
 		ns.Log("WARN", "comm", "ENCODE_FAIL", { type = msgType, err = err })

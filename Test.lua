@@ -225,123 +225,108 @@ function Test.LeaveChannel(name)
 	C_Timer.After(5, function() hiddenChannel = nil end)
 end
 
--- Whisper spellings. Forever characters have a first name and a surname
--- (UnitFullName returns the surname where other clients return the realm), and
--- the beta server answers whispers with a long delay (~25 s measured). So:
--- 1. whisper a name that cannot exist to measure the server's answer delay,
--- 2. whisper every plausible spelling SPACING s apart,
--- 3. credit each "no player named …" answer to the spelling sent `delay` s earlier.
--- done(ok, text, info) when finished; info = { delay, valid = {names}, delivered }.
+-- Whisper spellings. Forever characters have a first name and a surname, and the
+-- beta server delivers whispers and channel messages about a minute late
+-- (measured 2026-10-12). So the test only sends here; Test.WhisperResult()
+-- evaluates whatever has come back so far:
+-- 1. a name that cannot exist measures the server's "no player named" delay,
+-- 2. every plausible spelling is sent SPACING s apart,
+-- 3. each rejection is credited to the spelling sent `delay` s earlier,
+-- 4. spellings that reach yourself (loopback) count as delivered, with latency.
 local SPACING = 4
-local MAX_WAIT = 75
 
 local function guildFullName(short)
 	if not IsInGuild() then return nil end
 	for i = 1, GetNumGuildMembers() do
 		local full = GetGuildRosterInfo(i)
-		if full and ns.ShortName(full) == short then return full end
+		if full and ns.SameName(full, short) then return full end
 	end
 end
 
-function Test.Whisper(target, done, progress)
-	done = done or function(_, text) say("whisper: %s", text) end
-	local short, surname
-	if not target or ns.IsMe(target) then
-		short, surname = UnitFullName("player")
-	else
-		short = ns.ShortName(target)
-	end
-	local realm = GetNormalizedRealmName()
+function Test.WhisperSend(target)
+	local first, surname = ns.NameParts(target or ns.MyName())
 	local candidates = {}
-	if surname and surname ~= "" and surname ~= realm then
-		candidates[#candidates + 1] = { "nameDashSurname", short .. "-" .. surname }
-		candidates[#candidates + 1] = { "nameSurname", short .. " " .. surname }
+	if surname then
+		candidates[#candidates + 1] = { "nameDashSurname", first .. "-" .. surname }
+		candidates[#candidates + 1] = { "nameSurname", first .. " " .. surname }
 	end
 	candidates[#candidates + 1] = { "typed", target }
-	candidates[#candidates + 1] = { "short", short }
-	candidates[#candidates + 1] = { "withRealm", short .. "-" .. realm }
-	candidates[#candidates + 1] = { "roster", guildFullName(short) }
+	candidates[#candidates + 1] = { "first", first }
+	candidates[#candidates + 1] = { "withRealm", first .. "-" .. GetNormalizedRealmName() }
+	candidates[#candidates + 1] = { "roster", guildFullName(first) }
 
-	local run = randomId()
-	local seen, list = {}, {}
+	local st = { run = randomId(), list = {}, rejections = {}, startedMs = ns.NowMs() }
+	local seen = {}
 	for _, c in ipairs(candidates) do
 		if c[2] and not seen[c[2]] then
 			seen[c[2]] = true
-			list[#list + 1] = { label = c[1], name = c[2] }
+			st.list[#st.list + 1] = { label = c[1], name = c[2] }
 		end
 	end
-	local probe = { label = "probe", name = "Zq" .. randomId():gsub("%d", "x") .. "kin" }
+	st.probe = { label = "probe", name = "Zq" .. randomId():gsub("%d", "x") .. "kin" }
 
-	local rejections = {}
 	local listener = CreateFrame("Frame")
 	listener:RegisterEvent("CHAT_MSG_SYSTEM")
 	listener:SetScript("OnEvent", function(_, _, msg)
 		if type(msg) == "string" and msg:match(notFoundPattern()) then
-			rejections[#rejections + 1] = GetTime()
-			log("S2_REJECT", { run = run, msg = msg })
+			st.rejections[#st.rejections + 1] = GetTime()
+			log("S2_REJECT", { run = st.run, msg = msg })
 		end
 	end)
-	hideChatNoise(MAX_WAIT + #list * SPACING + 30)
+	st.listener = listener
+	hideChatNoise(300)
 
 	local function send(c)
-		c.at = GetTime()
-		local _, resName = rawSend(("S2|%s|%s|%s"):format(run, c.label, c.name), "WHISPER", c.name)
-		log("S2_TX", { run = run, variant = c.label, target = c.name, res = resName })
+		c.at, c.atMs = GetTime(), ns.NowMs()
+		local _, resName = rawSend(("S2|%s|%s|%s"):format(st.run, c.label, c.name), "WHISPER", c.name)
+		log("S2_TX", { run = st.run, variant = c.label, target = c.name, res = resName })
 	end
-	send(probe)
-	for i, c in ipairs(list) do
+	send(st.probe)
+	for i, c in ipairs(st.list) do
 		C_Timer.After(i * SPACING, function() send(c) end)
 	end
+	st.sendSeconds = #st.list * SPACING
+	return st
+end
 
-	local started, startedMs, lastProgress = GetTime(), ns.NowMs(), 0
-	C_Timer.NewTicker(1, function(ticker)
-		local elapsed = GetTime() - started
-		local delay = rejections[1] and (rejections[1] - probe.at) or nil
-		local lastSent = list[#list].at
-		local ready = delay and lastSent and GetTime() > lastSent + delay + 5
-		if not ready and elapsed < MAX_WAIT + #list * SPACING then
-			if progress and elapsed - lastProgress >= 15 then
-				lastProgress = elapsed
-				progress(delay and ("server answers after %.0f s, collecting…"):format(delay)
-					or ("waiting for the server's first answer… %d s"):format(elapsed))
-			end
-			return
-		end
-		ticker:Cancel()
-		listener:UnregisterAllEvents()
-
-		-- Credit each rejection (after the probe's) to the spelling sent `delay` earlier.
-		local rejected = {}
-		if delay then
-			for k = 2, #rejections do
-				for _, c in ipairs(list) do
-					if c.at and math.abs(rejections[k] - delay - c.at) < SPACING / 2 then rejected[c.label] = true end
-				end
+-- Evaluates a whisper test. final = stop listening and report what is known.
+-- Returns complete (bool), ok (bool), text.
+function Test.WhisperResult(st, final)
+	local delay = st.rejections[1] and st.probe.at and (st.rejections[1] - st.probe.at) or nil
+	local rejected = {}
+	if delay then
+		for k = 2, #st.rejections do
+			for _, c in ipairs(st.list) do
+				if c.at and math.abs(st.rejections[k] - delay - c.at) < SPACING / 2 then rejected[c.label] = true end
 			end
 		end
-		local delivered = {}
-		for _, r in ipairs(records("S2_RX", startedMs, function(d) return d.run == run end)) do
-			delivered[r[6].variant] = true
+	end
+	local latency = {}
+	for _, r in ipairs(records("S2_RX", st.startedMs, function(d) return d.run == st.run end)) do
+		for _, c in ipairs(st.list) do
+			if c.label == r[6].variant and c.atMs then latency[c.label] = (r[2] - c.atMs) / 1000 end
 		end
-		local valid, names = {}, {}
-		for _, c in ipairs(list) do
-			if delay and not rejected[c.label] then
-				valid[#valid + 1] = c.name
-				names[#names + 1] = "'" .. c.name .. "'"
-			end
-		end
-		local info = { delay = delay, valid = valid, delivered = next(delivered) ~= nil }
-		log("S2_RESULT", { run = run, delay = delay, valid = table.concat(valid, ","),
-			rejected = #rejections - (delay and 1 or 0), delivered = info.delivered })
-		if not delay then
-			done(false, ("no answer from the server within %d s"):format(MAX_WAIT), info)
+	end
+	local delivered, refused, open = {}, {}, {}
+	for _, c in ipairs(st.list) do
+		if latency[c.label] then
+			delivered[#delivered + 1] = ("'%s' (%.0f s)"):format(c.name, latency[c.label])
+		elseif rejected[c.label] then
+			refused[#refused + 1] = "'" .. c.name .. "'"
 		else
-			done(#valid > 0, ("server answer delay %.0f s · valid: %s · %d rejected%s"):format(delay,
-				#names > 0 and table.concat(names, ", ") or "none", #rejections - 1,
-				info.delivered and " · delivered to yourself" or ""), info)
+			open[#open + 1] = "'" .. c.name .. "'"
 		end
-	end)
-	say("whisper test %s: %d spellings to %s", run, #list, target or short)
+	end
+	local complete = #open == 0
+	if not complete and not final then return false end
+	st.listener:UnregisterAllEvents()
+	log("S2_RESULT", { run = st.run, delay = delay, delivered = table.concat(delivered, ","),
+		rejected = table.concat(refused, ","), unanswered = table.concat(open, ",") })
+	local parts = {}
+	if #delivered > 0 then parts[#parts + 1] = "delivered " .. table.concat(delivered, ", ") end
+	if #refused > 0 then parts[#parts + 1] = "rejected " .. table.concat(refused, ", ") end
+	if #open > 0 then parts[#parts + 1] = "no answer " .. table.concat(open, ", ") end
+	return true, #delivered > 0, table.concat(parts, " · ")
 end
 
 -- Sends n full-size frames, all at once ("burst") or every interval s ("pace").
@@ -350,7 +335,7 @@ function Test.Throttle(mode, n, interval, channel, target)
 	n = tonumber(n) or 30
 	interval = tonumber(interval) or 1
 	channel = channel or (IsInGuild() and "GUILD") or "WHISPER"
-	if channel == "WHISPER" then target = target or UnitName("player") end
+	if channel == "WHISPER" then target = ns.WhisperName(target or ns.MyName()) end
 	local run = randomId()
 	local pad = string.rep("x", 200)
 	local function one(seq)
@@ -371,27 +356,38 @@ function Test.Throttle(mode, n, interval, channel, target)
 	return run
 end
 
--- Waits until all accepted frames of a throttle run came back (or timeout), then
--- reports counts and latency. done(ok, text).
-local function awaitThrottle(run, since, expected, timeout, done)
-	local started = GetTime()
-	C_Timer.NewTicker(1, function(ticker)
-		local sent = count("S1_TX", since, function(d) return d.run == run and d.ok end)
-		local refused = count("S1_TX", since, function(d) return d.run == run and not d.ok end)
-		local rx = records("S1_RX", since, function(d) return d.run == run end)
-		local sentAll = sent + refused >= expected
-		if not (sentAll and #rx >= sent) and GetTime() - started < timeout then return end
-		ticker:Cancel()
-		local minL, maxL, sum = math.huge, 0, 0
-		for _, r in ipairs(rx) do
-			local l = (r[2] - r[6].sentMs) / 1000
-			minL, maxL, sum = math.min(minL, l), math.max(maxL, l), sum + l
+-- Send-side counts of a throttle run: accepted, refused, refusal codes.
+local function throttleSent(run, since)
+	local ok, refused, codes = 0, 0, {}
+	for _, r in ipairs(records("S1_TX", since, function(d) return d.run == run end)) do
+		if r[6].ok then
+			ok = ok + 1
+		else
+			refused = refused + 1
+			codes[r[6].res] = true
 		end
-		log("ALL_THROTTLE", { run = run, sent = sent, refused = refused, received = #rx,
-			latencyMin = #rx > 0 and minL or nil, latencyMax = #rx > 0 and maxL or nil })
-		local latency = #rx > 0 and (" · latency %.1f–%.1f s"):format(minL, maxL) or ""
-		done(sent > 0 and #rx > 0, ("%d accepted, %d refused, %d came back%s"):format(sent, refused, #rx, latency))
-	end)
+	end
+	local names = {}
+	for code in pairs(codes) do names[#names + 1] = code end
+	table.sort(names)
+	return ok, refused, table.concat(names, ", ")
+end
+
+-- Receive side: complete (bool), ok (bool), text. final = report what is known.
+local function throttleResult(run, since, final)
+	local sent = throttleSent(run, since)
+	local rx = records("S1_RX", since, function(d) return d.run == run end)
+	local complete = #rx >= sent and sent > 0
+	if not complete and not final then return false end
+	local minL, maxL = math.huge, 0
+	for _, r in ipairs(rx) do
+		local l = (r[2] - r[6].sentMs) / 1000
+		minL, maxL = math.min(minL, l), math.max(maxL, l)
+	end
+	log("ALL_THROTTLE_RX", { run = run, sent = sent, received = #rx,
+		latencyMin = #rx > 0 and minL or nil, latencyMax = #rx > 0 and maxL or nil })
+	return true, #rx > 0 and #rx >= sent, ("%d of %d came back%s"):format(#rx, sent,
+		#rx > 0 and (" after %.0f–%.0f s"):format(minL, maxL) or "")
 end
 
 -- Logs every change of the messaging restrictions (until /reload).
@@ -484,6 +480,10 @@ end
 
 -- A step: { name, needs = function -> skip reason or nil, timeout = s, run = function(done, progress) }.
 -- run calls done(ok, text) exactly once; progress(text) prints an indented status line.
+-- Message checks are split: quick "send" steps, then one step that collects all
+-- answers in parallel (the beta server delivers about a minute late).
+local COLLECT_TIMEOUT = 360
+
 local function buildSteps(ctx)
 	local function route()
 		if IsInGuild() then return "GUILD", nil, "guild chat" end
@@ -504,50 +504,92 @@ local function buildSteps(ctx)
 					done(index ~= nil, index and ("joined #%d (left again at the end)"):format(index) or "could not join")
 				end)
 			end },
-		{ name = "Whisper name spellings", timeout = MAX_WAIT + 40, run = function(done, progress)
-			Test.Whisper(nil, function(ok, text, info)
-				ctx.whisper = info
-				done(ok, text)
-			end, progress)
-		end },
-		{ name = "Whisper to another player", needs = function()
-			return "needs a second player with Kinship"
-		end },
-		{ name = "Message burst (30)", timeout = 60, needs = needRoute, run = function(done)
-			local channel, target, label = route()
-			local since = ns.NowMs()
-			local run = Test.Throttle("burst", 30, nil, channel, target)
-			awaitThrottle(run, since, 30, 50, function(ok, text) done(ok, label .. ": " .. text) end)
-		end },
-		{ name = "Message pace (20 every 0.5 s)", timeout = 75, needs = needRoute, run = function(done)
-			local channel, target, label = route()
-			-- Let the burst allowance refill first.
-			C_Timer.After(3, function()
-				local since = ns.NowMs()
-				local run = Test.Throttle("pace", 20, 0.5, channel, target)
-				awaitThrottle(run, since, 20, 60, function(ok, text) done(ok, label .. ": " .. text) end)
+		{ name = "Send whispers (name spellings)", timeout = 40, run = function(done)
+			ctx.whisper = Test.WhisperSend(nil)
+			C_Timer.After(ctx.whisper.sendSeconds + 0.5, function()
+				done(true, ("%d spellings + 1 probe sent"):format(#ctx.whisper.list))
 			end)
 		end },
-		{ name = "Report round trip", timeout = 180, needs = needRoute, run = function(done, progress)
+		{ name = "Send burst (30 at once)", needs = needRoute, run = function(done)
 			local channel, target, label = route()
-			local since = ns.NowMs()
+			ctx.burstSince = ns.NowMs()
+			ctx.burst = Test.Throttle("burst", 30, nil, channel, target)
+			local ok, refused, codes = throttleSent(ctx.burst, ctx.burstSince)
+			done(ok > 0, ("%s: %d accepted, %d refused%s"):format(label, ok, refused,
+				refused > 0 and (" (" .. codes .. ")") or ""))
+		end },
+		{ name = "Send paced (15, one per second)", timeout = 40, needs = needRoute, run = function(done)
+			local channel, target, label = route()
+			-- Let the client allowance refill after the burst.
+			C_Timer.After(10, function()
+				ctx.paceSince = ns.NowMs()
+				ctx.pace = Test.Throttle("pace", 15, 1, channel, target)
+				C_Timer.After(16, function()
+					local ok, refused, codes = throttleSent(ctx.pace, ctx.paceSince)
+					done(refused == 0, ("%s: %d accepted, %d refused%s"):format(label, ok, refused,
+						refused > 0 and (" (" .. codes .. ")") or ""))
+				end)
+			end)
+		end },
+		{ name = "Send report offer", needs = needRoute, run = function(done)
+			local channel, target, label = route()
+			ctx.reportSince = ns.NowMs()
 			ns.Report.activeHandle = nil
-			ns.Report.Send(UnitName("player"), 1, channel, target)
-			local lastQuarter = 0
+			-- A small report (last 3 min) is enough to prove the transfer.
+			ns.Report.Send(ns.MyName(), 0.05, channel, target)
+			done(true, label .. ": offer sent (accept, transfer and receipt follow)")
+		end },
+		{ name = "Collect server answers", timeout = COLLECT_TIMEOUT + 10, run = function(done, progress, sub)
+			local started, lastProgress = GetTime(), 0
+			local results = {}
+			local checks = {
+				{ key = "whisper", label = "whispers", eval = function(final)
+					return Test.WhisperResult(ctx.whisper, final)
+				end },
+				{ key = "burst", label = "burst", eval = function(final)
+					if not ctx.burst then return true, nil, "skipped" end
+					return throttleResult(ctx.burst, ctx.burstSince, final)
+				end },
+				{ key = "pace", label = "paced", eval = function(final)
+					if not ctx.pace then return true, nil, "skipped" end
+					return throttleResult(ctx.pace, ctx.paceSince, final)
+				end },
+				{ key = "report", label = "report", eval = function(final)
+					if not ctx.reportSince then return true, nil, "skipped" end
+					if count("REPORT_RECEIVED", ctx.reportSince) > 0 then
+						local h = ns.Report.activeHandle
+						return true, true, ("round trip complete (%s parts, %d s)"):format(h and h.parts or "?",
+							math.floor((ns.NowMs() - ctx.reportSince) / 1000))
+					end
+					if not final then return false end
+					local stage = count("OFFER_ACCEPTED", ctx.reportSince) > 0 and "accepted, data not complete"
+						or count("OFFER_RECEIVED", ctx.reportSince) > 0 and "offer arrived, acceptance did not come back"
+						or "offer never arrived"
+					return true, false, stage
+				end },
+			}
 			local ticker
 			ticker = C_Timer.NewTicker(1, function()
-				local h = ns.Report.activeHandle
-				if h and h.parts > 0 then
-					local quarter = math.floor(h.sent / h.parts * 4)
-					if quarter > lastQuarter and quarter < 4 then
-						lastQuarter = quarter
-						progress(("%d%% of %d parts sent"):format(quarter * 25, h.parts))
+				local elapsed = GetTime() - started
+				local final = elapsed >= COLLECT_TIMEOUT
+				local open = {}
+				for _, c in ipairs(checks) do
+					if not results[c.key] then
+						local complete, ok, text = c.eval(final)
+						if complete then
+							results[c.key] = true
+							sub(c.label, ok, text)
+						else
+							open[#open + 1] = c.label
+						end
 					end
 				end
-				if count("REPORT_RECEIVED", since) > 0 then
+				if #open == 0 then
 					ticker:Cancel()
-					done(true, ("%s: received (%s parts, %d s)"):format(label, h and h.parts or "?",
-						math.floor((ns.NowMs() - since) / 1000)))
+					done(nil, ("%d s"):format(elapsed))
+				elseif elapsed - lastProgress >= 20 then
+					lastProgress = elapsed
+					progress(("%d s · still waiting for: %s"):format(elapsed, table.concat(open, ", ")))
 				end
 			end)
 			ctx.cancel[#ctx.cancel + 1] = function() ticker:Cancel() end
@@ -576,7 +618,7 @@ function Test.All()
 
 	local where = IsInGuild() and ("guild " .. (GetGuildInfo("player") or "?")) or "no guild"
 	local group = IsInRaid() and "raid" or IsInGroup() and "group" or "solo"
-	out("%s▶ Kinship test|r · v%s · %s · %s · takes 3–5 min on the beta (slow server answers)", C_STEP, ns.version, where, group)
+	out("%s▶ Kinship test|r · v%s · %s · %s · about 5 min (the beta delivers messages ~1 min late)", C_STEP, ns.version, where, group)
 	log("ALL_START", { guild = IsInGuild(), group = group, steps = total })
 
 	quiet = true
@@ -622,12 +664,22 @@ function Test.All()
 		local function progress(text)
 			if not finished then out("      %s%s|r", C_DIM, text) end
 		end
+		local function verdict(ok)
+			if ok == nil then return C_SKIP .. "DONE" end
+			return ok and (C_OK .. "OK") or (C_FAIL .. "FAIL")
+		end
+		-- Result line of one check inside a step (counted like a step).
+		local function sub(name, ok, text)
+			if ok == true then passed = passed + 1 elseif ok == false then failed = failed + 1 end
+			out("      %s|r %s: %s%s|r", verdict(ok), name, C_DIM, text or "")
+			log("ALL_CHECK", { n = i, check = name, result = ok == nil and "skip" or ok and "ok" or "fail", text = text })
+		end
 		local function done(ok, text)
 			if finished then return end
 			finished = true
-			if ok then passed = passed + 1 else failed = failed + 1 end
-			out("%s  %s|r %s%s|r", label, ok and (C_OK .. "OK") or (C_FAIL .. "FAIL"), C_DIM, text or "")
-			log("ALL_STEP", { n = i, step = step.name, result = ok and "ok" or "fail", text = text })
+			if ok == true then passed = passed + 1 elseif ok == false then failed = failed + 1 end
+			out("%s  %s|r %s%s|r", label, verdict(ok), C_DIM, text or "")
+			log("ALL_STEP", { n = i, step = step.name, result = ok == nil and "done" or ok and "ok" or "fail", text = text })
 			C_Timer.After(0.5, function() runStep(i + 1) end)
 		end
 		if step.timeout then
@@ -638,7 +690,7 @@ function Test.All()
 				end
 			end)
 		end
-		local ok, err = ns.Safe(step.run, done, progress)
+		local ok, err = ns.Safe(step.run, done, progress, sub)
 		if not ok then done(false, "error: " .. tostring(err)) end
 	end
 

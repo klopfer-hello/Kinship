@@ -147,7 +147,7 @@ ns.OnLoad(function()
 	-- Sender: the receiver answered.
 	Comm.Register("RA", function(p, sender)
 		local o = type(p) == "table" and outgoing[p.id]
-		if not o or ns.ShortName(sender) ~= ns.ShortName(o.target) then return end
+		if not o or not ns.SameName(sender, o.target) then return end
 		if not p.ok then
 			outgoing[p.id] = nil
 			say("%s declined the report.", o.target)

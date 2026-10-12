@@ -22,7 +22,7 @@ read_globals = {
 	"C_AddOns", "C_Calendar", "C_ChatInfo", "C_Club", "C_DateAndTime", "C_EncodingUtil",
 	"C_GuildInfo", "C_Timer", "Enum",
 	-- functions
-	"Ambiguate", "ChatFrame_AddMessageEventFilter", "CreateFrame", "date", "debugstack", "geterrorhandler", "GetBuildInfo", "GetChannelName",
+	"ChatFrame_AddMessageEventFilter", "CreateFrame", "date", "debugstack", "geterrorhandler", "GetBuildInfo", "GetChannelName",
 	"GetGuildInfo", "GetGuildRosterInfo", "GetInstanceInfo", "GetLocale", "GetNormalizedRealmName",
 	"GetNumGroupMembers", "GetNumGuildMembers", "GetRealmName", "GetServerTime", "GetTime",
 	"GetTimePreciseSec", "InCombatLockdown", "IsEncounterInProgress", "IsInGroup", "IsInGuild",
