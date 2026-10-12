@@ -8,7 +8,9 @@ ns.Report = Report
 
 local TAG = "!KIN-DIAG1!"
 local MAX_INBOX = 10
-local OFFER_TIMEOUT = 120
+-- Two trips (offer, acceptance) plus a human clicking Accept; the beta delivers
+-- messages 55–80 s late (measured 2026-10-12).
+local OFFER_TIMEOUT = 300
 
 -- Set by the test pipeline: chat output is suppressed, offers from yourself are
 -- accepted without the popup, and the running transfer is exposed for progress.

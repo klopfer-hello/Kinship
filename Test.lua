@@ -317,7 +317,13 @@ function Test.WhisperResult(st, final)
 			open[#open + 1] = "'" .. c.name .. "'"
 		end
 	end
-	local complete = #open == 0
+	-- Unknown spellings may never get an answer at all (seen on the beta), so once
+	-- some spelling arrived, wait twice its delay after the last send, then stop.
+	local maxLatency = 0
+	for _, l in pairs(latency) do maxLatency = math.max(maxLatency, l) end
+	local lastSent = st.list[#st.list].at
+	local settled = maxLatency > 0 and lastSent and GetTime() - lastSent > 2 * maxLatency + 10
+	local complete = #open == 0 or settled
 	if not complete and not final then return false end
 	st.listener:UnregisterAllEvents()
 	log("S2_RESULT", { run = st.run, delay = delay, delivered = table.concat(delivered, ","),
