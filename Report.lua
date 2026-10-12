@@ -50,7 +50,7 @@ function Report.Show(hours)
 	end
 	ns.Log("INFO", "report", "REPORT_SHOWN", { bytes = #text, hours = hours })
 	ns.ShowText("Kinship report",
-		("Ctrl+C to copy (%d KB), then paste it to the developer. Or send it in game: /kin report send <name>")
+		("Ctrl+C to copy (%d KB), then paste it to the developer. Or send it in game: /kin report <name>")
 			:format(math.ceil(#text / 1024)),
 		text, true)
 end
@@ -77,10 +77,15 @@ function Report.Send(target, hours, route)
 	ns.Log("INFO", "report", "OFFER_SENT", { id = id, to = target, ch = channel, bytes = #encoded })
 	ns.Print("asked %s to accept a report (%s). Waiting for them…", target, sizeText(#encoded))
 	C_Timer.After(OFFER_TIMEOUT, function()
-		if outgoing[id] and not outgoing[id].accepted then
-			outgoing[id] = nil
-			ns.Print("%s did not answer the report offer. Do they have Kinship enabled? Try: /kin report send %s guild", target, target)
-			ns.Log("WARN", "report", "OFFER_TIMEOUT", { id = id, to = target, ch = channel })
+		if not outgoing[id] or outgoing[id].accepted then return end
+		outgoing[id] = nil
+		ns.Log("WARN", "report", "OFFER_TIMEOUT", { id = id, to = target, ch = channel })
+		-- Whispered addon messages may not arrive on this client: retry once via guild chat.
+		if channel == "WHISPER" and IsInGuild() then
+			ns.Print("no answer from %s by whisper — trying via guild chat.", target)
+			Report.Send(target, hours, "GUILD")
+		else
+			ns.Print("%s did not answer. Do they have Kinship enabled and are they online?", target)
 		end
 	end)
 end
@@ -178,27 +183,6 @@ ns.OnLoad(function()
 		inbox[#inbox + 1] = { from = sender, at = GetServerTime(), id = p.id, data = text }
 		while #inbox > MAX_INBOX do table.remove(inbox, 1) end
 		ns.Log("INFO", "report", "REPORT_RECEIVED", { id = p.id, from = sender, bytes = text and #text })
-		ns.Print("received a report from %s — /kin reports (it is also saved in your SavedVariables).", ns.ShortName(sender))
+		ns.Print("received a report from %s — it is saved and will be written to disk on /reload or logout.", ns.ShortName(sender))
 	end)
 end)
-
-function Report.ListInbox()
-	local inbox = KinshipLog.inbox
-	if #inbox == 0 then
-		ns.Print("no reports received.")
-		return
-	end
-	for i, r in ipairs(inbox) do
-		ns.Print("%d. %s · %s · %d KB", i, ns.ShortName(r.from), date("%Y-%m-%d %H:%M", r.at), math.ceil(#(r.data or "") / 1024))
-	end
-	ns.Print("/kin reports <n> to show one, /kin reports clear to delete all.")
-end
-
-function Report.ShowInbox(i)
-	local r = KinshipLog.inbox[i]
-	if not r then
-		ns.Print("no report #%s.", tostring(i))
-		return
-	end
-	ns.ShowText("Report from " .. ns.ShortName(r.from), "Ctrl+C to copy, decode with scripts/kinship-diag.py", r.data, true)
-end

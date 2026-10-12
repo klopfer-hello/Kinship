@@ -8,16 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Project scaffold.
-- Diagnostics: persistent structured log with error capture, `/kin status`,
-  `/kin log`, `/kin debug`, `/kin report` (copy box) and `/kin report send <name>`
-  (in-game delivery with an accept prompt), `/kin reports` inbox.
+- Four commands: `/kin` (status), `/kin test` (runs every measurement
+  automatically, prints a summary), `/kin report [name]` (copy a diagnostic
+  report, or send it to a player in game with an accept prompt; falls back to
+  guild chat when a whisper gets no answer), `/kin log` (log window).
+- Persistent structured log with error capture.
 - Message transport with chunking, priorities, throttle and lockdown handling;
   timers only run while there is something to send.
-- `/kin test` measurements for message limits, whisper delivery, messaging
-  lockdown, encoding sizes, identities, game events and calendar access.
-- `/kin test` runs every measurement automatically and prints a summary.
-- Solo testing: `/kin test loopback on` processes your own messages like a peer's;
-  tests whisper yourself when you are not in a guild, or use a custom channel.
 - `scripts/kinship-diag.py` to decode reports, read SavedVariables and merge logs
   from several clients into one timeline.
 - luacheck config, `scripts/lint.ps1` and CI (lint, TOC check, decoder self-test).

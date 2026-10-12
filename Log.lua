@@ -27,7 +27,6 @@ local session = {
 ns.logSession = session
 
 local debugCats = {}   -- category -> true when DEBUG/TRACE is recorded
-local echoCats = {}    -- category -> true when records are also printed to chat
 local total = 0        -- records across all stored sessions
 
 local function trim()
@@ -54,9 +53,6 @@ function ns.Log(level, category, code, data)
 	recs[#recs + 1] = { GetServerTime(), ns.NowMs(), lv, category, code, data }
 	total = total + 1
 	if total > MAX_RECORDS * 1.1 then trim() end
-	if echoCats[category] then
-		ns.Print("|cff999999[%s %s]|r %s %s", LEVEL_NAMES[lv], category, code, ns.LogDataText(data))
-	end
 end
 
 -- Compact one-line rendering of a record's data table.
@@ -70,20 +66,6 @@ function ns.LogDataText(data)
 	table.sort(parts)
 	return table.concat(parts, " ")
 end
-
-function ns.SetDebug(category, on)
-	local saved = KinshipDB.settings.debug
-	if category == "all" then
-		for _, cat in ipairs(ns.LOG_CATEGORIES) do saved[cat] = on end
-	else
-		saved[category] = on
-	end
-	for cat, v in pairs(saved) do debugCats[cat] = v or nil end
-end
-
-function ns.IsDebug(category) return debugCats[category] == true end
-
-function ns.SetEcho(category, on) echoCats[category] = on or nil end
 
 ---------------------------------------------------------------------------
 -- Errors

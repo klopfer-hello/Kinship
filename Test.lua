@@ -359,9 +359,12 @@ function Test.All()
 		{ 12, "throttle burst", function() Test.Throttle("burst", 30) end },
 		{ 30, "throttle pace", function() Test.Throttle("pace", 20, 0.5) end },
 		{ 45, "report to self", function() ns.Report.Send(UnitName("player"), 1) end },
+		-- Keep logging game events and messaging lockdown for the rest of this
+		-- session (not persisted: a /reload ends it).
 		{ 46, "watchers", function()
 			Test.Events(true)
 			Test.Lockdown(true)
+			KinshipDB.settings.testEvents, KinshipDB.settings.testLockdown = nil, nil
 		end },
 	}
 	for i, step in ipairs(steps) do
@@ -394,14 +397,9 @@ function Test.All()
 			ns.Print("tests done: self-whisper replies %d · throttle %d sent / %d received · calendar events %d · report %s · errors %d",
 				summary.selfWhisperReplies, summary.throttleSent, summary.throttleReceived,
 				summary.calendarEvents, summary.reportReceived and "ok" or "|cffff6060missing|r", summary.errors)
-			ns.Print("Now |cffffff00/reload|r to save the results. The event + lockdown watchers stay on while you play (/kin test watch off).")
+			ns.Print("Now |cffffff00/reload|r to save the results (or keep playing a bit first — game events are logged until you reload).")
 		end)
 	end)
-end
-
-function Test.Watch(on)
-	Test.Events(on)
-	Test.Lockdown(on)
 end
 
 ---------------------------------------------------------------------------
