@@ -32,20 +32,38 @@ end
 ---------------------------------------------------------------------------
 -- S1 throttle: burst N full-size frames, or pace them every `interval` seconds.
 ---------------------------------------------------------------------------
-function Test.Throttle(mode, count, interval, channel)
+-- Picks where solo-friendly test traffic goes: GUILD when in a guild, otherwise a
+-- whisper to yourself; "CHANNEL <name>" uses a custom chat channel you joined.
+local function testRoute(channel, target)
+	if channel == "CHANNEL" then
+		local index = GetChannelName(target or "")
+		if index == 0 then return nil, nil, "join the channel first: /join " .. tostring(target) end
+		return "CHANNEL", index
+	end
+	if channel == "WHISPER" or (not channel and not IsInGuild()) then
+		return "WHISPER", target or UnitName("player")
+	end
+	return channel or "GUILD", nil
+end
+
+function Test.Throttle(mode, count, interval, channelArg, targetArg)
 	count = tonumber(count) or 30
 	interval = tonumber(interval) or 1
-	channel = channel or "GUILD"
+	local channel, target, err = testRoute(channelArg, targetArg)
+	if not channel then
+		ns.Print(err)
+		return
+	end
 	local run = ("%x"):format(math.random(0, 0xffff))
 	local pad = string.rep("x", 200)
 	local counts = {}
 	local function one(seq)
 		local text = ("S1|%s|%d|%d|%s"):format(run, seq, ns.NowMs(), pad):sub(1, 255)
-		local _, name = rawSend(text, channel)
+		local _, name = rawSend(text, channel, target)
 		counts[name] = (counts[name] or 0) + 1
 		log("S1_TX", { run = run, seq = seq, res = name })
 	end
-	log("S1_START", { run = run, mode = mode, count = count, interval = interval, ch = channel })
+	log("S1_START", { run = run, mode = mode, count = count, interval = interval, ch = channel, to = target })
 	if mode == "pace" then
 		local seq = 0
 		C_Timer.NewTicker(interval, function()
@@ -76,10 +94,7 @@ local function guildFullName(short)
 end
 
 function Test.Whisper(target)
-	if not target then
-		ns.Print("usage: /kin test whisper <name>")
-		return
-	end
+	target = target or UnitName("player")
 	local run = ("%x"):format(math.random(0, 0xffff))
 	local short = ns.ShortName(target)
 	local variants = {
@@ -298,11 +313,17 @@ function Test.Calendar()
 	C_Timer.After(5, function() ns.Safe(dump) end)
 end
 
+function Test.Loopback(on)
+	KinshipDB.settings.loopback = on or nil
+	ns.Print("loopback %s — own messages are %s", on and "on" or "off", on and "processed like a peer's (solo testing)" or "ignored")
+	ns.Log("INFO", "test", "LOOPBACK", { on = on })
+end
+
 ---------------------------------------------------------------------------
 -- Receiver side of S1/S2 (always active, cheap).
 ---------------------------------------------------------------------------
 local function onTestMessage(_, prefix, text, channel, sender)
-	if prefix ~= TPREFIX or ns.IsMe(sender) then return end
+	if prefix ~= TPREFIX or not ns.AcceptFrom(sender) then return end
 	local kind, rest = text:match("^(%w+)|(.*)$")
 	if kind == "S1" then
 		local run, seq, sentMs = rest:match("^(%w+)|(%d+)|(%d+)|")

@@ -86,6 +86,12 @@ function ns.IsMe(name)
 	return name ~= nil and ns.ShortName(name) == UnitName("player")
 end
 
+-- Own messages are ignored, except in loopback test mode (/kin test loopback on),
+-- which lets a single client without guild or group exercise the whole pipeline.
+function ns.AcceptFrom(sender)
+	return not ns.IsMe(sender) or KinshipDB.settings.loopback == true
+end
+
 -- Reads a value that may be a secret on this client; secrets become nil.
 function ns.Plain(value)
 	if issecretvalue and issecretvalue(value) then return nil end

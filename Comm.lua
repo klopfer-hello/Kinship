@@ -185,7 +185,7 @@ local function dispatch(text, sender, channel)
 end
 
 local function onAddonMessage(_, prefix, text, channel, sender)
-	if prefix ~= PREFIX or ns.IsMe(sender) then return end
+	if prefix ~= PREFIX or not ns.AcceptFrom(sender) then return end
 	local id, part, parts, chunk = text:match("^K1(%w+):(%d+)/(%d+):(.*)$")
 	if not id then
 		ns.Log("DEBUG", "comm", "RX_BAD_FRAME", { from = sender, len = #text })
