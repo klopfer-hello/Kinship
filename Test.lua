@@ -469,42 +469,232 @@ function Test.Events(on)
 end
 
 ---------------------------------------------------------------------------
+-- Tests with other players. Every Kinship client answers these automatically
+-- (no popup, rate-limited, test data only), whether or not it runs a test itself.
+-- Messages go through the real transport (ns.Comm):
+--   XD discover (broadcast)     -> XH hello (to sender, same channel)
+--   XW whisper ping             -> XV whisper pong
+--   XQ receipt query            -> XR which test frames arrived
+--   XT 4 KB transfer (whisper)  -> XA size + checksum confirmation
+---------------------------------------------------------------------------
+local MAX_PEERS = 2
+local TRANSFER_SIZE = 4000
+local activeRun          -- run id of the /kin test in progress (requester side)
+local answered = {}      -- sender|type -> GetTime() of the last automatic answer
+
+local function checksum(s)
+	local h = 0
+	for i = 1, #s do h = (h * 31 + s:byte(i)) % 2147483647 end
+	return h
+end
+
+-- Automatic answers are limited to one per sender and type every `gap` seconds.
+local function mayAnswer(sender, msgType, gap)
+	local key, now = sender .. "|" .. msgType, GetTime()
+	if answered[key] and now - answered[key] < gap then return false end
+	answered[key] = now
+	return true
+end
+
+local function discoveryChannels()
+	local chans = {}
+	if IsInGuild() then chans[#chans + 1] = "GUILD" end
+	if IsInRaid() then chans[#chans + 1] = "RAID" elseif IsInGroup() then chans[#chans + 1] = "PARTY" end
+	return chans
+end
+
+function Test.Discover(run)
+	local chans = discoveryChannels()
+	for _, ch in ipairs(chans) do
+		ns.Comm.Send("XD", { run = run, v = ns.version }, ch, nil, ns.Comm.PRIO.ALERT)
+	end
+	log("PEER_DISCOVER", { run = run, channels = table.concat(chans, ",") })
+	return chans
+end
+
+-- Players that answered the discovery of `run` (first answer per player).
+local function peersOf(run)
+	local peers = {}
+	for _, r in ipairs(records("PEER_HELLO", 0, function(d) return d.run == run end)) do
+		local d, known = r[6], false
+		for _, p in ipairs(peers) do
+			if ns.SameName(p.name, d.name) then known = true end
+		end
+		if not known then
+			peers[#peers + 1] = { name = d.name, v = d.v, build = d.build, ch = d.ch, at = r[2] }
+		end
+	end
+	return peers
+end
+
+-- Starts the three checks with one peer; results arrive as PEER_* log records.
+function Test.PeerStart(run, peer, runs)
+	local Comm = ns.Comm
+	for seq = 1, 3 do
+		C_Timer.After((seq - 1) * 2, function()
+			Comm.Send("XW", { run = run, seq = seq, t = ns.NowMs() }, "WHISPER", peer.name, Comm.PRIO.ALERT)
+		end)
+	end
+	Comm.Send("XQ", { run = run, runs = runs }, peer.ch, peer.name, Comm.PRIO.NORMAL)
+	local chars = {}
+	for i = 1, TRANSFER_SIZE do chars[i] = string.char(math.random(33, 126)) end
+	local data = table.concat(chars)
+	peer.transferMs = ns.NowMs()
+	Comm.Send("XT", { run = run, data = data, sum = checksum(data) }, "WHISPER", peer.name, Comm.PRIO.BULK)
+	log("PEER_START", { run = run, peer = peer.name, ch = peer.ch })
+end
+
+-- complete, ok, text for one peer's checks; final = report what is known.
+local function peerResult(run, peer, final)
+	local function mine(d) return d.run == run and ns.SameName(d.name, peer.name) end
+	local pongs = records("PEER_PONG", 0, mine)
+	local receipt = records("PEER_RECEIPT", 0, mine)[1]
+	local ack = records("PEER_TRANSFER", 0, mine)[1]
+	if not final and not (#pongs > 0 and receipt and ack) then return false end
+	local parts, ok = {}, true
+	if #pongs > 0 then
+		local best = math.huge
+		for _, r in ipairs(pongs) do best = math.min(best, r[6].rttMs) end
+		parts[#parts + 1] = ("whisper round trip %.0f s (%d/3)"):format(best / 1000, #pongs)
+	else
+		ok = false
+		parts[#parts + 1] = "no whisper answer"
+	end
+	if receipt then
+		local d = receipt[6]
+		local function fmt(key, label)
+			local c = d.counts and d.counts[key]
+			if c then parts[#parts + 1] = ("%s %d/%d arrived"):format(label, c.n, c.of or 0) end
+		end
+		fmt("burst", "burst")
+		fmt("pace", "paced")
+	else
+		ok = false
+		parts[#parts + 1] = "no receipt"
+	end
+	if ack then
+		local d = ack[6]
+		parts[#parts + 1] = ("%d B transfer %s in %.0f s"):format(d.bytes or 0, d.ok and "intact" or "CORRUPT",
+			(ack[2] - (peer.transferMs or ack[2])) / 1000)
+		ok = ok and d.ok
+	else
+		ok = false
+		parts[#parts + 1] = "transfer not confirmed"
+	end
+	return true, ok, table.concat(parts, " · ")
+end
+
+function Test.RegisterPeerHandlers()
+	local Comm = ns.Comm
+	local PRIO = Comm.PRIO
+
+	-- Responder: answer a discovery after a short random delay (spreads replies).
+	Comm.Register("XD", function(p, sender, channel)
+		if type(p) ~= "table" or not p.run or ns.IsMe(sender) or not mayAnswer(sender, "XD", 30) then return end
+		log("PEER_ASKED", { run = p.run, from = sender, ch = channel })
+		C_Timer.After(math.random() * 4, function()
+			Comm.Send("XH", { run = p.run, v = ns.version, build = select(2, GetBuildInfo()), name = ns.MyName() },
+				channel, sender, PRIO.ALERT)
+		end)
+	end)
+	Comm.Register("XW", function(p, sender)
+		if type(p) ~= "table" or not mayAnswer(sender, "XW" .. tostring(p.seq), 5) then return end
+		Comm.Send("XV", p, "WHISPER", sender, PRIO.ALERT)
+	end)
+	Comm.Register("XQ", function(p, sender, channel)
+		if type(p) ~= "table" or type(p.runs) ~= "table" or not mayAnswer(sender, "XQ", 30) then return end
+		local counts = {}
+		for key, info in pairs(p.runs) do
+			if type(info) == "table" and info.run then
+				local rx = records("S1_RX", 0, function(d) return d.run == info.run end)
+				counts[key] = { n = #rx, of = info.sent }
+			end
+		end
+		Comm.Send("XR", { run = p.run, counts = counts }, channel, sender, PRIO.NORMAL)
+	end)
+	Comm.Register("XT", function(p, sender)
+		if type(p) ~= "table" or type(p.data) ~= "string" or #p.data > 16000 or not mayAnswer(sender, "XT", 60) then return end
+		Comm.Send("XA", { run = p.run, bytes = #p.data, ok = checksum(p.data) == p.sum }, "WHISPER", sender, PRIO.ALERT)
+	end)
+
+	-- Requester: record answers that belong to the running test.
+	local function forMe(p) return type(p) == "table" and activeRun and p.run == activeRun end
+	Comm.Register("XH", function(p, sender, channel)
+		if forMe(p) then log("PEER_HELLO", { run = p.run, name = sender, v = p.v, build = p.build, ch = channel }) end
+	end)
+	Comm.Register("XV", function(p, sender)
+		if forMe(p) then log("PEER_PONG", { run = p.run, name = sender, seq = p.seq, rttMs = ns.NowMs() - p.t }) end
+	end)
+	Comm.Register("XR", function(p, sender)
+		if forMe(p) then log("PEER_RECEIPT", { run = p.run, name = sender, counts = p.counts }) end
+	end)
+	Comm.Register("XA", function(p, sender)
+		if forMe(p) then log("PEER_TRANSFER", { run = p.run, name = sender, bytes = p.bytes, ok = p.ok }) end
+	end)
+end
+
+---------------------------------------------------------------------------
 -- Pipeline (/kin test)
 ---------------------------------------------------------------------------
 local C_STEP, C_OK, C_FAIL, C_SKIP, C_DIM = "|cff7fbfff", "|cff40ff40", "|cffff4040", "|cff999999", "|cffbbbbbb"
 local running = false
+local COLLECT_TIMEOUT = 360
+local DISCOVERY_WAIT = 150   -- seconds after the discovery before "nobody answered"
+local PEER_TIMEOUT = 300
 
 local function out(fmt, ...)
 	ns.Print(fmt, ...)
 end
 
--- A step: { name, needs = function -> skip reason or nil, timeout = s, run = function(done, progress) }.
--- run calls done(ok, text) exactly once; progress(text) prints an indented status line.
--- Message checks are split: quick "send" steps, then one step that collects all
--- answers in parallel (the beta server delivers about a minute late).
-local COLLECT_TIMEOUT = 360
+-- What this run can test, decided once at the start.
+local function situation()
+	local s = { guild = IsInGuild(), raid = IsInRaid(), group = IsInGroup() }
+	s.groupChannel = s.raid and "RAID" or s.group and "PARTY" or nil
+	-- Where own round trips go: guild chat, else group chat, else a private channel.
+	if s.guild then
+		s.route, s.routeLabel = "GUILD", "guild chat"
+	elseif s.groupChannel then
+		s.route, s.routeLabel = s.groupChannel, s.raid and "raid chat" or "party chat"
+	else
+		s.route, s.routeLabel = "CHANNEL", "test channel"
+	end
+	s.canDiscover = s.guild or s.group
+	return s
+end
 
-local function buildSteps(ctx)
+-- A step: { name, needs = function -> skip reason or nil, timeout = s, run = function(done, progress, sub) }.
+-- run calls done(ok, text) exactly once (ok == nil: neutral); progress(text) prints a
+-- status line; sub(name, ok, text) prints and counts one check inside the step.
+-- Message checks are split into quick "send" steps and one step that collects all
+-- answers in parallel (the beta server delivers about a minute late).
+local function buildSteps(ctx, sit)
 	local function route()
-		if IsInGuild() then return "GUILD", nil, "guild chat" end
-		return "CHANNEL", ctx.chanIndex, "test channel"
+		if sit.route == "CHANNEL" then return "CHANNEL", ctx.chanIndex, sit.routeLabel end
+		return sit.route, nil, sit.routeLabel
 	end
 	local function needRoute()
-		if not IsInGuild() and not ctx.chanIndex then return "no guild and no test channel" end
+		if sit.route == "CHANNEL" and not ctx.chanIndex then return "no guild, no group and no test channel" end
 	end
 	return {
+		{ name = "Look for other Kinship players", needs = function()
+			if not sit.canDiscover then return "not in a guild or group" end
+		end, run = function(done)
+			ctx.discoverMs = ns.NowMs()
+			local chans = Test.Discover(ctx.run)
+			done(true, ("asked %s; answers are collected later"):format(table.concat(chans, " + "):lower()))
+		end },
 		{ name = "Encoding", run = function(done) done(Test.Codec()) end },
 		{ name = "Identity", run = function(done) done(Test.Ids()) end },
 		{ name = "Calendar", timeout = 10, run = function(done) Test.Calendar(done) end },
-		{ name = "Private test channel", timeout = 15,
-			needs = function() if IsInGuild() then return "in a guild, guild chat is used instead" end end,
-			run = function(done)
-				Test.JoinChannel(function(index, name)
-					ctx.chanIndex, ctx.chanName = index, name
-					done(index ~= nil, index and ("joined #%d (left again at the end)"):format(index) or "could not join")
-				end)
-			end },
-		{ name = "Send whispers (name spellings)", timeout = 40, run = function(done)
+		{ name = "Private test channel", timeout = 15, needs = function()
+			if sit.route ~= "CHANNEL" then return sit.routeLabel .. " is used instead" end
+		end, run = function(done)
+			Test.JoinChannel(function(index, name)
+				ctx.chanIndex, ctx.chanName = index, name
+				done(index ~= nil, index and ("joined #%d (left again at the end)"):format(index) or "could not join")
+			end)
+		end },
+		{ name = "Send whispers to yourself (name spellings)", timeout = 40, run = function(done)
 			ctx.whisper = Test.WhisperSend(nil)
 			C_Timer.After(ctx.whisper.sendSeconds + 0.5, function()
 				done(true, ("%d spellings + 1 probe sent"):format(#ctx.whisper.list))
@@ -515,6 +705,7 @@ local function buildSteps(ctx)
 			ctx.burstSince = ns.NowMs()
 			ctx.burst = Test.Throttle("burst", 30, nil, channel, target)
 			local ok, refused, codes = throttleSent(ctx.burst, ctx.burstSince)
+			ctx.burstSent = ok
 			done(ok > 0, ("%s: %d accepted, %d refused%s"):format(label, ok, refused,
 				refused > 0 and (" (" .. codes .. ")") or ""))
 		end },
@@ -526,12 +717,22 @@ local function buildSteps(ctx)
 				ctx.pace = Test.Throttle("pace", 15, 1, channel, target)
 				C_Timer.After(16, function()
 					local ok, refused, codes = throttleSent(ctx.pace, ctx.paceSince)
+					ctx.paceSent = ok
 					done(refused == 0, ("%s: %d accepted, %d refused%s"):format(label, ok, refused,
 						refused > 0 and (" (" .. codes .. ")") or ""))
 				end)
 			end)
 		end },
-		{ name = "Send report offer", needs = needRoute, run = function(done)
+		{ name = "Send group echo (3)", needs = function()
+			if not sit.groupChannel then return "not in a group" end
+			if sit.route == sit.groupChannel then return "group chat is already the main route" end
+		end, run = function(done)
+			ctx.groupSince = ns.NowMs()
+			ctx.groupRun = Test.Throttle("burst", 3, nil, sit.groupChannel)
+			local ok = throttleSent(ctx.groupRun, ctx.groupSince)
+			done(ok > 0, ("%s: %d of 3 accepted"):format(sit.groupChannel:lower(), ok))
+		end },
+		{ name = "Send report offer to yourself", needs = needRoute, run = function(done)
 			local channel, target, label = route()
 			ctx.reportSince = ns.NowMs()
 			ns.Report.activeHandle = nil
@@ -543,19 +744,23 @@ local function buildSteps(ctx)
 			local started, lastProgress = GetTime(), 0
 			local results = {}
 			local checks = {
-				{ key = "whisper", label = "whispers", eval = function(final)
+				{ key = "whisper", label = "whispers to yourself", eval = function(final)
 					return Test.WhisperResult(ctx.whisper, final)
 				end },
 				{ key = "burst", label = "burst", eval = function(final)
-					if not ctx.burst then return true, nil, "skipped" end
+					if not ctx.burst then return true, nil, "not sent" end
 					return throttleResult(ctx.burst, ctx.burstSince, final)
 				end },
 				{ key = "pace", label = "paced", eval = function(final)
-					if not ctx.pace then return true, nil, "skipped" end
+					if not ctx.pace then return true, nil, "not sent" end
 					return throttleResult(ctx.pace, ctx.paceSince, final)
 				end },
-				{ key = "report", label = "report", eval = function(final)
-					if not ctx.reportSince then return true, nil, "skipped" end
+				{ key = "group", label = "group echo", eval = function(final)
+					if not ctx.groupRun then return true, nil, "not sent" end
+					return throttleResult(ctx.groupRun, ctx.groupSince, final)
+				end },
+				{ key = "report", label = "report to yourself", eval = function(final)
+					if not ctx.reportSince then return true, nil, "not sent" end
 					if count("REPORT_RECEIVED", ctx.reportSince) > 0 then
 						local h = ns.Report.activeHandle
 						return true, true, ("round trip complete (%s parts, %d s)"):format(h and h.parts or "?",
@@ -566,6 +771,19 @@ local function buildSteps(ctx)
 						or count("OFFER_RECEIVED", ctx.reportSince) > 0 and "offer arrived, acceptance did not come back"
 						or "offer never arrived"
 					return true, false, stage
+				end },
+				{ key = "peers", label = "other Kinship players", eval = function(final)
+					if not ctx.discoverMs then return true, nil, "not searched" end
+					local peers = peersOf(ctx.run)
+					local waited = (ns.NowMs() - ctx.discoverMs) / 1000
+					-- Done when someone answered and 15 s passed without a new answer, or after the wait.
+					local settled = #peers > 0 and (ns.NowMs() - peers[#peers].at) / 1000 > 15
+					if not (settled or waited >= DISCOVERY_WAIT or final) then return false end
+					ctx.peers = peers
+					if #peers == 0 then return true, nil, ("nobody answered within %d s"):format(waited) end
+					local names = {}
+					for _, p in ipairs(peers) do names[#names + 1] = ("%s (v%s)"):format(ns.ShortName(p.name), p.v or "?") end
+					return true, true, ("%d found: %s"):format(#peers, table.concat(names, ", "))
 				end },
 			}
 			local ticker
@@ -594,6 +812,46 @@ local function buildSteps(ctx)
 			end)
 			ctx.cancel[#ctx.cancel + 1] = function() ticker:Cancel() end
 		end },
+		{ name = "Tests with other players", timeout = PEER_TIMEOUT + 10, needs = function()
+			if not sit.canDiscover then return "not in a guild or group" end
+			if not ctx.peers or #ctx.peers == 0 then return "nobody with Kinship answered" end
+		end, run = function(done, progress, sub)
+			local runs = {}
+			if ctx.burst and sit.route ~= "CHANNEL" then runs.burst = { run = ctx.burst, sent = ctx.burstSent } end
+			if ctx.pace and sit.route ~= "CHANNEL" then runs.pace = { run = ctx.pace, sent = ctx.paceSent } end
+			local peers = {}
+			for i = 1, math.min(MAX_PEERS, #ctx.peers) do peers[i] = ctx.peers[i] end
+			for i, peer in ipairs(peers) do
+				-- Stagger peers so their transfers don't share the send allowance.
+				C_Timer.After((i - 1) * 20, function() Test.PeerStart(ctx.run, peer, runs) end)
+			end
+			local started, lastProgress, results = GetTime(), 0, {}
+			local ticker
+			ticker = C_Timer.NewTicker(1, function()
+				local elapsed = GetTime() - started
+				local final = elapsed >= PEER_TIMEOUT
+				local open = {}
+				for _, peer in ipairs(peers) do
+					if not results[peer.name] then
+						local complete, ok, text = peerResult(ctx.run, peer, final)
+						if complete then
+							results[peer.name] = true
+							sub(ns.ShortName(peer.name), ok, text)
+						else
+							open[#open + 1] = ns.ShortName(peer.name)
+						end
+					end
+				end
+				if #open == 0 then
+					ticker:Cancel()
+					done(nil, ("%d player%s, %d s"):format(#peers, #peers == 1 and "" or "s", elapsed))
+				elseif elapsed - lastProgress >= 20 then
+					lastProgress = elapsed
+					progress(("%d s · still waiting for: %s"):format(elapsed, table.concat(open, ", ")))
+				end
+			end)
+			ctx.cancel[#ctx.cancel + 1] = function() ticker:Cancel() end
+		end },
 		{ name = "Start gameplay logging", run = function(done)
 			local events, missing = Test.Events(true)
 			Test.Lockdown(true)
@@ -610,16 +868,20 @@ function Test.All()
 	end
 	running = true
 	local startMs = ns.NowMs()
-	local ctx = { cancel = {} }
-	local steps = buildSteps(ctx)
+	local sit = situation()
+	local ctx = { cancel = {}, run = randomId() .. randomId() }
+	activeRun = ctx.run
+	local steps = buildSteps(ctx, sit)
 	local total = #steps
 	local passed, failed, skipped = 0, 0, 0
 	local hadLoopback = KinshipDB.settings.loopback
 
-	local where = IsInGuild() and ("guild " .. (GetGuildInfo("player") or "?")) or "no guild"
-	local group = IsInRaid() and "raid" or IsInGroup() and "group" or "solo"
-	out("%s▶ Kinship test|r · v%s · %s · %s · about 5 min (the beta delivers messages ~1 min late)", C_STEP, ns.version, where, group)
-	log("ALL_START", { guild = IsInGuild(), group = group, steps = total })
+	local where = sit.guild and ("guild " .. (GetGuildInfo("player") or "?")) or "no guild"
+	local group = sit.raid and "raid" or sit.group and "group" or "solo"
+	local minutes = sit.canDiscover and "5–10" or "about 5"
+	out("%s▶ Kinship test|r · v%s · %s · %s · round trips via %s · %s min (the beta delivers messages ~1 min late)",
+		C_STEP, ns.version, where, group, sit.routeLabel, minutes)
+	log("ALL_START", { run = ctx.run, guild = sit.guild, group = group, route = sit.route, steps = total })
 
 	quiet = true
 	ns.Report.quiet = true
@@ -633,11 +895,12 @@ function Test.All()
 		ns.Report.autoAcceptSelf = false
 		KinshipDB.settings.loopback = hadLoopback
 		Test.LeaveChannel(ctx.chanName)
+		activeRun = nil
 		running = false
 		local secs = math.floor((ns.NowMs() - startMs) / 1000)
 		local errors = count("LUA_ERROR", startMs)
-		log("ALL_SUMMARY", { passed = passed, failed = failed, skipped = skipped, seconds = secs, errors = errors,
-			comm = ns.Comm.stats })
+		log("ALL_SUMMARY", { run = ctx.run, passed = passed, failed = failed, skipped = skipped, seconds = secs,
+			errors = errors, comm = ns.Comm.stats })
 		local color = failed > 0 and C_FAIL or C_OK
 		out("%s■ %d passed · %d failed · %d skipped · %dm %02ds%s|r", color, passed, failed, skipped,
 			math.floor(secs / 60), secs % 60, errors > 0 and (" · %d errors"):format(errors) or "")
@@ -670,8 +933,8 @@ function Test.All()
 		end
 		-- Result line of one check inside a step (counted like a step).
 		local function sub(name, ok, text)
-			if ok == true then passed = passed + 1 elseif ok == false then failed = failed + 1 end
-			out("      %s|r %s: %s%s|r", verdict(ok), name, C_DIM, text or "")
+			if ok == true then passed = passed + 1 elseif ok == false then failed = failed + 1 else skipped = skipped + 1 end
+			out("      %s|r %s: %s%s|r", ok == nil and (C_SKIP .. "SKIP") or verdict(ok), name, C_DIM, text or "")
 			log("ALL_CHECK", { n = i, check = name, result = ok == nil and "skip" or ok and "ok" or "fail", text = text })
 		end
 		local function done(ok, text)
@@ -724,6 +987,7 @@ end
 ns.OnLoad(function()
 	C_ChatInfo.RegisterAddonMessagePrefix(TPREFIX)
 	ns.On("CHAT_MSG_ADDON", onTestMessage)
+	Test.RegisterPeerHandlers()
 	ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", systemFilter)
 	ChatFrame_AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE", channelNoticeFilter)
 	ChatFrame_AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE_USER", channelNoticeFilter)
