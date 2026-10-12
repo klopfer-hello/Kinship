@@ -12,6 +12,8 @@ local HELP = {
 	"/kin log [n] [category] — last log records (window)",
 	"/kin debug <category|all> on|off — verbose logging (" .. table.concat(ns.LOG_CATEGORIES, ", ") .. ")",
 	"/kin echo <category> on|off — also print a category to chat",
+	"/kin test — run every test this setup allows (~2 min), then /reload to save",
+	"/kin test watch on|off — keep logging game events + messaging lockdown while playing",
 	"/kin test throttle [burst|pace] [count] [interval] [GUILD|WHISPER|CHANNEL] [name]",
 	"/kin test whisper [name] · loopback on|off · lockdown on|off · codec · ids · events on|off · calendar",
 }
@@ -111,7 +113,9 @@ end
 
 commands.test = function(args)
 	local T, sub = ns.Test, args[1]
-	if sub == "throttle" then
+	if not sub or sub == "all" then
+		T.All()
+	elseif sub == "throttle" then
 		T.Throttle(args[2] or "burst", args[3], args[4], args[5] and args[5]:upper(), args[6])
 	elseif sub == "whisper" then
 		T.Whisper(args[2])
@@ -125,11 +129,14 @@ commands.test = function(args)
 		T.Events(onOff(args[2]) ~= false)
 	elseif sub == "calendar" then
 		T.Calendar()
+	elseif sub == "watch" then
+		T.Watch(onOff(args[2]) ~= false)
 	elseif sub == "loopback" then
 		T.Loopback(onOff(args[2]) ~= false)
 	else
-		ns.Print(HELP[8])
-		ns.Print(HELP[9])
+		for _, line in ipairs(HELP) do
+			if line:find("^/kin test") then ns.Print(line) end
+		end
 	end
 end
 

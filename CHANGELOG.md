@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timers only run while there is something to send.
 - `/kin test` measurements for message limits, whisper delivery, messaging
   lockdown, encoding sizes, identities, game events and calendar access.
+- `/kin test` runs every measurement automatically and prints a summary.
 - Solo testing: `/kin test loopback on` processes your own messages like a peer's;
   tests whisper yourself when you are not in a guild, or use a custom channel.
 - `scripts/kinship-diag.py` to decode reports, read SavedVariables and merge logs

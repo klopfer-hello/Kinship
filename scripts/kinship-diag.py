@@ -5,6 +5,7 @@
   svars <Kinship.lua>         SavedVariables file -> JSON (inbox reports decoded)
   merge <input> [<input>...]  one timeline across clients (inputs: report text,
                               decoded JSON, or a Kinship.lua SavedVariables file)
+  tests <input>               test results of the newest session (+ warnings/errors)
   selftest                    checks the decoders (used by CI)
 
 Report string = "!KIN-DIAG1!" + base64(deflate(CBOR(bundle))), produced in game
@@ -346,6 +347,21 @@ def cmd_merge(args):
         print(f"{fmt_time(t)}  {label:<16} {lvl:<5} {cat:<6} {code:<16} {json.dumps(data, ensure_ascii=False) if data is not None else ''}")
 
 
+def cmd_tests(args):
+    bundles = load_input(args[0])
+    label, b = bundles[0]
+    sessions = [s for s in b.get("sessions", []) or [] if s.get("records")]
+    if not sessions:
+        print("no sessions with records")
+        return
+    newest = sessions[-1]
+    h = newest.get("header", {}) or {}
+    print(f"session {h.get('version')} build {h.get('build')} ({h.get('interface')}) char={h.get('char')} guild={h.get('guild')}")
+    for t, _l, lvl, cat, code, data in timeline([(label, {"sessions": [newest]})]):
+        if cat in ("test", "report") or lvl in ("ERROR", "WARN"):
+            print(f"{fmt_time(t)}  {lvl:<5} {cat:<6} {code:<16} {json.dumps(data, ensure_ascii=False) if data is not None else ''}")
+
+
 def cmd_selftest(_args):
     bundle = {"v": 1, "from": "Tester", "sessions": [
         {"header": {"version": "0.1.0-alpha", "anchorServer": 1760000000, "anchorMs": 5000},
@@ -364,7 +380,8 @@ def cmd_selftest(_args):
     print("selftest ok")
 
 
-COMMANDS = {"decode": cmd_decode, "svars": cmd_svars, "merge": cmd_merge, "selftest": cmd_selftest}
+COMMANDS = {"decode": cmd_decode, "svars": cmd_svars, "merge": cmd_merge, "tests": cmd_tests,
+            "selftest": cmd_selftest}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

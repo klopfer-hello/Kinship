@@ -93,15 +93,21 @@ local function reply(msgType, payload, sender, channel)
 	end
 end
 
+local function acceptOffer(data)
+	incoming[data.id] = data.sender
+	reply("RA", { id = data.id, ok = true }, data.sender, data.channel)
+	ns.Log("INFO", "report", "OFFER_ACCEPTED", { id = data.id, from = data.sender })
+end
+
+-- Set by /kin test all: an offer from yourself is accepted without the popup.
+Report.autoAcceptSelf = false
+
 StaticPopupDialogs["KINSHIP_REPORT_OFFER"] = {
 	text = "%s wants to send you a Kinship diagnostic report (%s).\nAccept it?",
 	button1 = ACCEPT,
 	button2 = DECLINE,
 	OnAccept = function(self, data)
-		data = data or self.data
-		incoming[data.id] = data.sender
-		reply("RA", { id = data.id, ok = true }, data.sender, data.channel)
-		ns.Log("INFO", "report", "OFFER_ACCEPTED", { id = data.id, from = data.sender })
+		acceptOffer(data or self.data)
 	end,
 	OnCancel = function(self, data)
 		data = data or self.data
@@ -120,6 +126,10 @@ ns.OnLoad(function()
 	Comm.Register("RO", function(p, sender, channel)
 		if type(p) ~= "table" or not p.id then return end
 		ns.Log("INFO", "report", "OFFER_RECEIVED", { id = p.id, from = sender, ch = channel, bytes = p.bytes })
+		if Report.autoAcceptSelf and ns.IsMe(sender) then
+			acceptOffer({ id = p.id, sender = sender, channel = channel })
+			return
+		end
 		StaticPopup_Show("KINSHIP_REPORT_OFFER", ns.ShortName(sender), sizeText(p.bytes or 0),
 			{ id = p.id, sender = sender, channel = channel })
 	end)

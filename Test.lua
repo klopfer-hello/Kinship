@@ -320,6 +320,91 @@ function Test.Loopback(on)
 end
 
 ---------------------------------------------------------------------------
+-- /kin test all: every spike this setup allows, in sequence, then a summary.
+-- Results stay in the log (SavedVariables, written on /reload or logout).
+---------------------------------------------------------------------------
+local running = false
+
+local function countCodes(sinceMs)
+	local counts = {}
+	for _, r in ipairs(ns.logSession.records) do
+		if r[2] >= sinceMs and (r[4] == "test" or r[4] == "report") then
+			counts[r[5]] = (counts[r[5]] or 0) + 1
+		end
+	end
+	return counts
+end
+
+function Test.All()
+	if running then
+		ns.Print("test run already in progress")
+		return
+	end
+	running = true
+	local startMs = ns.NowMs()
+	local hadLoopback = KinshipDB.settings.loopback
+	local solo = not IsInGuild() and not IsInGroup()
+	log("ALL_START", { guild = IsInGuild(), group = IsInGroup(), raid = IsInRaid(), solo = solo })
+	ns.Print("running all tests (~2 min). Keep playing normally; don't /reload until it says done.")
+
+	-- Loopback lets a single client receive its own whispers and reports.
+	Test.Loopback(true)
+	ns.Report.autoAcceptSelf = true
+
+	local steps = {
+		{ 0, "codec", Test.Codec },
+		{ 1, "ids", Test.Ids },
+		{ 2, "calendar", Test.Calendar },
+		{ 3, "whisper", function() Test.Whisper(UnitName("player")) end },
+		{ 12, "throttle burst", function() Test.Throttle("burst", 30) end },
+		{ 30, "throttle pace", function() Test.Throttle("pace", 20, 0.5) end },
+		{ 45, "report to self", function() ns.Report.Send(UnitName("player"), 1) end },
+		{ 46, "watchers", function()
+			Test.Events(true)
+			Test.Lockdown(true)
+		end },
+	}
+	for i, step in ipairs(steps) do
+		C_Timer.After(step[1], function()
+			log("ALL_STEP", { n = i, step = step[2] })
+			ns.Safe(step[3])
+		end)
+	end
+
+	C_Timer.After(110, function()
+		ns.Safe(function()
+			local c = countCodes(startMs)
+			local summary = {
+				codec = (c.S4_CODEC or 0) > 0,
+				selfWhisperReplies = c.S2_PONG or 0,
+				throttleSent = c.S1_TX or 0,
+				throttleReceived = c.S1_RX or 0,
+				calendarEvents = c.S7_EVENT or 0,
+				reportReceived = (c.REPORT_RECEIVED or 0) > 0,
+				errors = 0,
+				commStats = ns.Comm.stats,
+			}
+			for _, r in ipairs(ns.logSession.records) do
+				if r[2] >= startMs and r[3] == 1 then summary.errors = summary.errors + 1 end
+			end
+			log("ALL_SUMMARY", summary)
+			KinshipDB.settings.loopback = hadLoopback
+			ns.Report.autoAcceptSelf = false
+			running = false
+			ns.Print("tests done: self-whisper replies %d · throttle %d sent / %d received · calendar events %d · report %s · errors %d",
+				summary.selfWhisperReplies, summary.throttleSent, summary.throttleReceived,
+				summary.calendarEvents, summary.reportReceived and "ok" or "|cffff6060missing|r", summary.errors)
+			ns.Print("Now |cffffff00/reload|r to save the results. The event + lockdown watchers stay on while you play (/kin test watch off).")
+		end)
+	end)
+end
+
+function Test.Watch(on)
+	Test.Events(on)
+	Test.Lockdown(on)
+end
+
+---------------------------------------------------------------------------
 -- Receiver side of S1/S2 (always active, cheap).
 ---------------------------------------------------------------------------
 local function onTestMessage(_, prefix, text, channel, sender)
