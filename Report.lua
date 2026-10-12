@@ -73,7 +73,8 @@ local function sizeText(bytes)
 end
 
 -- route: "WHISPER" (default) or "GUILD" (addressed to target over guild chat).
-function Report.Send(target, hours, route)
+-- route: "WHISPER" (default), "GUILD", or "CHANNEL" with chanIndex.
+function Report.Send(target, hours, route, chanIndex)
 	local channel = route or "WHISPER"
 	local bundle = Report.Build(hours)
 	local encoded = ns.Encode(bundle)
@@ -82,8 +83,8 @@ function Report.Send(target, hours, route)
 		return
 	end
 	local id = ("%x"):format(math.random(0, 0x7fffffff))
-	outgoing[id] = { bundle = bundle, target = target, channel = channel, at = GetTime() }
-	ns.Comm.Send("RO", { id = id, bytes = #encoded, hours = hours }, channel, target, ns.Comm.PRIO.NORMAL)
+	outgoing[id] = { bundle = bundle, target = target, channel = channel, chanIndex = chanIndex, at = GetTime() }
+	ns.Comm.Send("RO", { id = id, bytes = #encoded, hours = hours }, channel, target, ns.Comm.PRIO.NORMAL, chanIndex)
 	ns.Log("INFO", "report", "OFFER_SENT", { id = id, to = target, ch = channel, bytes = #encoded })
 	say("asked %s to accept a report (%s). Waiting for them…", target, sizeText(#encoded))
 	C_Timer.After(OFFER_TIMEOUT, function()
@@ -100,17 +101,14 @@ function Report.Send(target, hours, route)
 	end)
 end
 
-local function reply(msgType, payload, sender, channel)
-	if channel == "WHISPER" then
-		ns.Comm.Send(msgType, payload, "WHISPER", sender, ns.Comm.PRIO.ALERT)
-	else
-		ns.Comm.Send(msgType, payload, channel, sender, ns.Comm.PRIO.ALERT)
-	end
+-- Answers on the channel the message came from (addressed to its sender).
+local function reply(msgType, payload, sender, channel, chanIndex)
+	ns.Comm.Send(msgType, payload, channel, sender, ns.Comm.PRIO.ALERT, chanIndex)
 end
 
 local function acceptOffer(data)
 	incoming[data.id] = data.sender
-	reply("RA", { id = data.id, ok = true }, data.sender, data.channel)
+	reply("RA", { id = data.id, ok = true }, data.sender, data.channel, data.chanIndex)
 	ns.Log("INFO", "report", "OFFER_ACCEPTED", { id = data.id, from = data.sender })
 end
 
@@ -123,7 +121,7 @@ StaticPopupDialogs["KINSHIP_REPORT_OFFER"] = {
 	end,
 	OnCancel = function(self, data)
 		data = data or self.data
-		reply("RA", { id = data.id, ok = false }, data.sender, data.channel)
+		reply("RA", { id = data.id, ok = false }, data.sender, data.channel, data.chanIndex)
 	end,
 	timeout = OFFER_TIMEOUT - 10,
 	whileDead = true,
@@ -135,15 +133,15 @@ ns.OnLoad(function()
 	local Comm = ns.Comm
 
 	-- Receiver: an offer arrives.
-	Comm.Register("RO", function(p, sender, channel)
+	Comm.Register("RO", function(p, sender, channel, chanIndex)
 		if type(p) ~= "table" or not p.id then return end
 		ns.Log("INFO", "report", "OFFER_RECEIVED", { id = p.id, from = sender, ch = channel, bytes = p.bytes })
 		if Report.autoAcceptSelf and ns.IsMe(sender) then
-			acceptOffer({ id = p.id, sender = sender, channel = channel })
+			acceptOffer({ id = p.id, sender = sender, channel = channel, chanIndex = chanIndex })
 			return
 		end
 		StaticPopup_Show("KINSHIP_REPORT_OFFER", ns.ShortName(sender), sizeText(p.bytes or 0),
-			{ id = p.id, sender = sender, channel = channel })
+			{ id = p.id, sender = sender, channel = channel, chanIndex = chanIndex })
 	end)
 
 	-- Sender: the receiver answered.
@@ -157,7 +155,7 @@ ns.OnLoad(function()
 		end
 		o.accepted = true
 		local nextPct = 25
-		local h = Comm.Send("RD", { id = p.id, bundle = o.bundle }, o.channel, o.target, Comm.PRIO.BULK)
+		local h = Comm.Send("RD", { id = p.id, bundle = o.bundle }, o.channel, o.target, Comm.PRIO.BULK, o.chanIndex)
 		if not h then
 			say("sending the report failed (see /kin log)")
 			return

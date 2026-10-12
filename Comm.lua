@@ -4,7 +4,8 @@
 -- Wire frame (one addon message, <= 255 bytes):
 --   "K1" .. msgId(base36) .. ":" .. part .. "/" .. parts .. ":" .. chunk
 -- The concatenated chunks are ns.Encode(envelope), envelope = { t = type, to = target?, p = payload }.
--- "to" addresses a message sent over a broadcast channel (GUILD/RAID/PARTY) to one player.
+-- "to" addresses a message sent over a broadcast channel (GUILD/RAID/PARTY/CHANNEL) to one player.
+-- For CHANNEL, chanIndex is the custom chat channel's number.
 
 local _, ns = ...
 
@@ -51,7 +52,7 @@ function Comm.Register(msgType, fn)
 end
 
 -- Queues a message. Returns a handle { id, parts, sent, onProgress, onDone } or nil, err.
-function Comm.Send(msgType, payload, channel, target, prio)
+function Comm.Send(msgType, payload, channel, target, prio, chanIndex)
 	local envelope = { t = msgType, p = payload }
 	if target and channel ~= "WHISPER" then envelope.to = target end
 	local text, err = ns.Encode(envelope)
@@ -76,7 +77,8 @@ function Comm.Send(msgType, payload, channel, target, prio)
 		local chunk = text:sub((i - 1) * room + 1, i * room)
 		q[#q + 1] = {
 			text = "K1" .. id .. ":" .. i .. "/" .. parts .. ":" .. chunk,
-			channel = channel, target = channel == "WHISPER" and target or nil,
+			channel = channel,
+			target = channel == "WHISPER" and target or channel == "CHANNEL" and chanIndex or nil,
 			handle = handle,
 		}
 	end
@@ -166,7 +168,7 @@ end
 ---------------------------------------------------------------------------
 -- Receive
 ---------------------------------------------------------------------------
-local function dispatch(text, sender, channel)
+local function dispatch(text, sender, channel, chanIndex)
 	local env, err = ns.Decode(text)
 	if type(env) ~= "table" or type(env.t) ~= "string" then
 		ns.Log("WARN", "comm", "RX_DECODE_FAIL", { from = sender, err = err })
@@ -177,13 +179,13 @@ local function dispatch(text, sender, channel)
 	ns.Log("DEBUG", "comm", "RX_MSG", { type = env.t, from = sender, ch = channel, bytes = #text })
 	local fn = handlers[env.t]
 	if fn then
-		ns.Safe(fn, env.p, sender, channel)
+		ns.Safe(fn, env.p, sender, channel, chanIndex)
 	else
 		ns.Log("DEBUG", "comm", "RX_UNHANDLED", { type = env.t, from = sender })
 	end
 end
 
-local function onAddonMessage(_, prefix, text, channel, sender)
+local function onAddonMessage(_, prefix, text, channel, sender, _, _, localID)
 	if prefix ~= PREFIX or not ns.AcceptFrom(sender) then return end
 	local id, part, parts, chunk = text:match("^K1(%w+):(%d+)/(%d+):(.*)$")
 	if not id then
@@ -193,7 +195,7 @@ local function onAddonMessage(_, prefix, text, channel, sender)
 	Comm.stats.recvFrames = Comm.stats.recvFrames + 1
 	part, parts = tonumber(part), tonumber(parts)
 	if parts == 1 then
-		dispatch(chunk, sender, channel)
+		dispatch(chunk, sender, channel, localID)
 		return
 	end
 	local key = sender .. "|" .. id
@@ -212,7 +214,7 @@ local function onAddonMessage(_, prefix, text, channel, sender)
 	end
 	if p.got == p.n then
 		partial[key] = nil
-		dispatch(table.concat(p.chunks), sender, channel)
+		dispatch(table.concat(p.chunks), sender, channel, localID)
 	end
 end
 
