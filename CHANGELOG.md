@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project scaffold.
 - Four commands: `/kin` (status), `/kin test` (runs every measurement
-  automatically, prints a summary), `/kin report [name]` (copy a diagnostic
+  automatically as a numbered pipeline: plan, one OK/FAIL/SKIP line per step,
+  summary), `/kin report [name]` (copy a diagnostic
   report, or send it to a player in game with an accept prompt; falls back to
   guild chat when a whisper gets no answer), `/kin log` (log window).
 - Persistent structured log with error capture.

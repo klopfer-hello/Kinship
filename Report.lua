@@ -10,6 +10,16 @@ local TAG = "!KIN-DIAG1!"
 local MAX_INBOX = 10
 local OFFER_TIMEOUT = 120
 
+-- Set by the test pipeline: chat output is suppressed, offers from yourself are
+-- accepted without the popup, and the running transfer is exposed for progress.
+Report.quiet = false
+Report.autoAcceptSelf = false
+Report.activeHandle = nil
+
+local function say(...)
+	if not Report.quiet then ns.Print(...) end
+end
+
 local outgoing = {}   -- offer id -> { bundle, target, channel, at }
 local incoming = {}   -- offer id -> sender (accepted offers)
 
@@ -45,7 +55,7 @@ end
 function Report.Show(hours)
 	local text, err = Report.ToString(Report.Build(hours))
 	if not text then
-		ns.Print("could not build the report: %s", tostring(err))
+		say("could not build the report: %s", tostring(err))
 		return
 	end
 	ns.Log("INFO", "report", "REPORT_SHOWN", { bytes = #text, hours = hours })
@@ -68,24 +78,24 @@ function Report.Send(target, hours, route)
 	local bundle = Report.Build(hours)
 	local encoded = ns.Encode(bundle)
 	if not encoded then
-		ns.Print("could not build the report")
+		say("could not build the report")
 		return
 	end
 	local id = ("%x"):format(math.random(0, 0x7fffffff))
 	outgoing[id] = { bundle = bundle, target = target, channel = channel, at = GetTime() }
 	ns.Comm.Send("RO", { id = id, bytes = #encoded, hours = hours }, channel, target, ns.Comm.PRIO.NORMAL)
 	ns.Log("INFO", "report", "OFFER_SENT", { id = id, to = target, ch = channel, bytes = #encoded })
-	ns.Print("asked %s to accept a report (%s). Waiting for them…", target, sizeText(#encoded))
+	say("asked %s to accept a report (%s). Waiting for them…", target, sizeText(#encoded))
 	C_Timer.After(OFFER_TIMEOUT, function()
 		if not outgoing[id] or outgoing[id].accepted then return end
 		outgoing[id] = nil
 		ns.Log("WARN", "report", "OFFER_TIMEOUT", { id = id, to = target, ch = channel })
 		-- Whispered addon messages may not arrive on this client: retry once via guild chat.
 		if channel == "WHISPER" and IsInGuild() then
-			ns.Print("no answer from %s by whisper — trying via guild chat.", target)
+			say("no answer from %s by whisper — trying via guild chat.", target)
 			Report.Send(target, hours, "GUILD")
 		else
-			ns.Print("%s did not answer. Do they have Kinship enabled and are they online?", target)
+			say("%s did not answer. Do they have Kinship enabled and are they online?", target)
 		end
 	end)
 end
@@ -103,9 +113,6 @@ local function acceptOffer(data)
 	reply("RA", { id = data.id, ok = true }, data.sender, data.channel)
 	ns.Log("INFO", "report", "OFFER_ACCEPTED", { id = data.id, from = data.sender })
 end
-
--- Set by /kin test all: an offer from yourself is accepted without the popup.
-Report.autoAcceptSelf = false
 
 StaticPopupDialogs["KINSHIP_REPORT_OFFER"] = {
 	text = "%s wants to send you a Kinship diagnostic report (%s).\nAccept it?",
@@ -145,32 +152,33 @@ ns.OnLoad(function()
 		if not o or ns.ShortName(sender) ~= ns.ShortName(o.target) then return end
 		if not p.ok then
 			outgoing[p.id] = nil
-			ns.Print("%s declined the report.", o.target)
+			say("%s declined the report.", o.target)
 			return
 		end
 		o.accepted = true
 		local nextPct = 25
 		local h = Comm.Send("RD", { id = p.id, bundle = o.bundle }, o.channel, o.target, Comm.PRIO.BULK)
 		if not h then
-			ns.Print("sending the report failed (see /kin log)")
+			say("sending the report failed (see /kin log)")
 			return
 		end
-		ns.Print("%s accepted — sending %d parts in the background.", o.target, h.parts)
+		Report.activeHandle = h
+		say("%s accepted — sending %d parts in the background.", o.target, h.parts)
 		h.onProgress = function(hh)
 			local pct = math.floor(hh.sent / hh.parts * 100)
 			if pct >= nextPct and hh.sent < hh.parts then
-				ns.Print("report to %s: %d%%", o.target, pct)
+				say("report to %s: %d%%", o.target, pct)
 				nextPct = nextPct + 25
 			end
 		end
 		h.onDone = function()
 			outgoing[p.id] = nil
-			ns.Print("report sent to %s.", o.target)
+			say("report sent to %s.", o.target)
 			ns.Log("INFO", "report", "REPORT_SENT", { id = p.id, to = o.target, parts = h.parts })
 		end
 		h.onFail = function(_, res)
 			outgoing[p.id] = nil
-			ns.Print("sending the report to %s failed (%s).", o.target, tostring(res))
+			say("sending the report to %s failed (%s).", o.target, tostring(res))
 		end
 	end)
 
@@ -183,6 +191,6 @@ ns.OnLoad(function()
 		inbox[#inbox + 1] = { from = sender, at = GetServerTime(), id = p.id, data = text }
 		while #inbox > MAX_INBOX do table.remove(inbox, 1) end
 		ns.Log("INFO", "report", "REPORT_RECEIVED", { id = p.id, from = sender, bytes = text and #text })
-		ns.Print("received a report from %s — it is saved and will be written to disk on /reload or logout.", ns.ShortName(sender))
+		say("received a report from %s — it is saved and will be written to disk on /reload or logout.", ns.ShortName(sender))
 	end)
 end)
