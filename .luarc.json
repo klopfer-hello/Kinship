@@ -1,0 +1,18 @@
+{
+	"runtime.version": "Lua 5.1",
+	"diagnostics.globals": [
+		"Kinship",
+		"KinshipDB",
+		"KinshipCharDB"
+	],
+	"diagnostics.disable": [
+		"lowercase-global",
+		"missing-parameter",
+		"param-type-mismatch",
+		"cast-local-type",
+		"deprecated"
+	],
+	"workspace.ignoreDir": [
+		"Libs"
+	]
+}

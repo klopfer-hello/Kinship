@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: Kinship
+## Notes: Guild deeds, points and togetherness — synced between guild members, no website needed.
+## Author: Klopfer-Hello
+## Version: 0.0.1
+## X-License: MIT
+## SavedVariables: KinshipDB
+## SavedVariablesPerCharacter: KinshipCharDB
+
+Kinship.lua

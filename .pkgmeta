@@ -1,0 +1,19 @@
+package-as: Kinship
+
+enable-nolib-creation: no
+
+ignore:
+  - .git
+  - .github
+  - .gitignore
+  - .luarc.json
+  - .pkgmeta
+  - CLAUDE.md
+  - docs
+  - media
+  - scripts
+  - dist
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
