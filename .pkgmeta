@@ -7,6 +7,7 @@ ignore:
   - .github
   - .gitignore
   - .luarc.json
+  - .luacheckrc
   - .pkgmeta
   - CLAUDE.md
   - docs

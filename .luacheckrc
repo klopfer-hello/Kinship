@@ -5,8 +5,7 @@ codes = true
 exclude_files = { "Libs/", "dist/", ".git/" }
 
 ignore = {
-	"212/self",   -- unused self in methods/callbacks
-	"212/_.*",    -- unused arguments named _ or _foo
+	"212",   -- unused arguments: event/comm callbacks keep their full signature
 }
 
 -- Globals this addon defines or writes into.
