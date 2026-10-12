@@ -2,9 +2,17 @@
 ## Title: Kinship
 ## Notes: Guild deeds, points and togetherness — synced between guild members, no website needed.
 ## Author: Klopfer-Hello
-## Version: 0.0.1
+## Version: 0.1.0-alpha
 ## X-License: MIT
-## SavedVariables: KinshipDB
+## SavedVariables: KinshipDB, KinshipLog
 ## SavedVariablesPerCharacter: KinshipCharDB
 
-Kinship.lua
+Core.lua
+Log.lua
+Codec.lua
+Comm.lua
+Dialog.lua
+Status.lua
+Report.lua
+Test.lua
+Slash.lua

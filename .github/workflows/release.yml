@@ -1,0 +1,41 @@
+name: Validate release tag
+
+# Guards that a version tag is consistent: TOC version matches the tag and the
+# CHANGELOG has a section for it.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive and validate version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          TOC_VERSION=$(sed -n 's/^## Version:[[:space:]]*//p' Kinship.toc | tr -d '\r')
+          if [ "$TOC_VERSION" != "$VERSION" ]; then
+            echo "TOC version ($TOC_VERSION) does not match tag ($VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Validate changelog section
+        run: |
+          awk -v ver="${{ steps.version.outputs.version }}" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG.md section found for version ${{ steps.version.outputs.version }}" >&2
+            exit 1
+          fi
+          cat release-notes.md

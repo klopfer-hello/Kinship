@@ -1,0 +1,35 @@
+-- luacheck config (run: scripts/lint.ps1, or `luacheck .` in the repo root)
+std = "lua51"
+max_line_length = false
+codes = true
+exclude_files = { "Libs/", "dist/", ".git/" }
+
+ignore = {
+	"212/self",   -- unused self in methods/callbacks
+	"212/_.*",    -- unused arguments named _ or _foo
+}
+
+-- Globals this addon defines or writes into.
+globals = {
+	"Kinship", "KinshipDB", "KinshipCharDB", "KinshipLog",
+	"SLASH_KINSHIP1", "SLASH_KINSHIP2",
+	"SlashCmdList", "StaticPopupDialogs", "UISpecialFrames",
+}
+
+-- WoW API used by the addon (Forever 1.60.1, retail API). Add names as needed;
+-- an unknown global is usually a typo or an API that does not exist here.
+read_globals = {
+	-- namespaces
+	"C_AddOns", "C_Calendar", "C_ChatInfo", "C_Club", "C_DateAndTime", "C_EncodingUtil",
+	"C_GuildInfo", "C_Timer", "Enum",
+	-- functions
+	"Ambiguate", "CreateFrame", "date", "debugstack", "geterrorhandler", "GetBuildInfo",
+	"GetGuildInfo", "GetGuildRosterInfo", "GetInstanceInfo", "GetLocale", "GetNormalizedRealmName",
+	"GetNumGroupMembers", "GetNumGuildMembers", "GetRealmName", "GetServerTime", "GetTime",
+	"GetTimePreciseSec", "InCombatLockdown", "IsEncounterInProgress", "IsInGroup", "IsInGuild",
+	"IsInInstance", "IsInRaid", "issecretvalue", "StaticPopup_Show", "tinsert", "UnitClass",
+	"UnitExists", "UnitFullName", "UnitGUID", "UnitIsConnected", "UnitIsInMyGuild", "UnitLevel",
+	"UnitName", "UnitXP", "UnitXPMax", "wipe",
+	-- frames, objects and strings
+	"ACCEPT", "ChatFontNormal", "DECLINE", "DEFAULT_CHAT_FRAME", "NO", "UIParent", "YES",
+}

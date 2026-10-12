@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: luacheck
+        uses: lunarmodules/luacheck@v1
+        with:
+          args: . --formatter plain
+
+      - name: Verify TOC load list against the repo
+        run: |
+          fail=0
+          while IFS= read -r line; do
+            line="${line%$'\r'}"
+            case "$line" in ''|'#'*) continue ;; esac
+            f="${line//\\//}"
+            if [ ! -f "$f" ]; then
+              echo "MISSING file referenced by TOC: $f" >&2
+              fail=1
+            fi
+          done < Kinship.toc
+          exit $fail
+
+      - name: Decoder self-test
+        run: python3 scripts/kinship-diag.py selftest
